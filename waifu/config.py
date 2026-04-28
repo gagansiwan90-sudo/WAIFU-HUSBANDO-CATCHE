@@ -30,11 +30,11 @@ class Config:
     PHOTO_URL:        list[str] = [u.strip() for u in
                                    os.environ.get("PHOTO_URLS", "").split(",")
                                    if u.strip().startswith("http")]
-    DROP_INTERVAL_MIN:    int   = int(os.environ.get("DROP_INTERVAL_MINUTES", "15"))
+    DROP_INTERVAL_MIN:    int   = int(os.environ.get("DROP_INTERVAL_MINUTES", "30"))
     DEFAULT_MSG_FREQUENCY: int  = int(os.environ.get("DEFAULT_MSG_FREQUENCY", "100"))
 
     # Economy
-    DAILY_COINS:     int = 200
+    DAILY_COINS:     int = 100
     DUEL_WIN_COINS:  int = 150
     DUEL_LOSE_COINS: int = 30
 
