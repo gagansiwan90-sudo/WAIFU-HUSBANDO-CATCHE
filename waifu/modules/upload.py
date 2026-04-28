@@ -179,7 +179,7 @@ async def uploadchar(update: Update, context: CallbackContext) -> None:
             "❌ Reply to a post that has the character's image and caption.\n\n"
             "<b>Expected caption format:</b>\n"
             "🍀 Name: Character Name\n"
-            "🍋 Rarity: Legendary\n"
+            "🍋 Rarity: Extreme\n"
             "🌸 Anime: Anime Name\n"
             "🌱 ID: 26  <i>(optional)</i>",
             parse_mode=ParseMode.HTML,
@@ -221,7 +221,7 @@ async def uploadchar(update: Update, context: CallbackContext) -> None:
         char_id = await _next_id()
 
     char = {
-        "img_url": photo,           # Telegram file_id (no expiry for bot-uploaded files)
+        "img_url": photo,
         "name":    parsed["name"],
         "anime":   parsed["anime"],
         "rarity":  parsed["rarity"],
@@ -353,3 +353,4 @@ application.add_handler(CommandHandler("upload",     upload,      block=False))
 application.add_handler(CommandHandler("uploadchar", uploadchar,  block=False))
 application.add_handler(CommandHandler("delete",     delete,      block=False))
 application.add_handler(CommandHandler("update",     update_char, block=False))
+   
