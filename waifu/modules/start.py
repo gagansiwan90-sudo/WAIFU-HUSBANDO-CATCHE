@@ -93,23 +93,18 @@ async def button(update: Update, context: CallbackContext) -> None:
     await q.answer()
 
     back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
-    main_kb  = InlineKeyboardMarkup([
-        *_kb().inline_keyboard,
-        [InlineKeyboardButton("📂 Source",
-                              url="https://github.com/working/WAIFU-HUSBANDO-CATCHER")],
-    ])
 
     try:
         if q.data == "help":
             await q.edit_message_caption(caption=HELP, reply_markup=back_kb, parse_mode=ParseMode.HTML)
         elif q.data == "back":
-            await q.edit_message_caption(caption=WELCOME, reply_markup=main_kb, parse_mode=ParseMode.HTML)
+            await q.edit_message_caption(caption=WELCOME, reply_markup=_kb(), parse_mode=ParseMode.HTML)
     except Exception:
         try:
             if q.data == "help":
                 await q.edit_message_text(HELP, reply_markup=back_kb, parse_mode=ParseMode.HTML)
             elif q.data == "back":
-                await q.edit_message_text(WELCOME, reply_markup=main_kb, parse_mode=ParseMode.HTML)
+                await q.edit_message_text(WELCOME, reply_markup=_kb(), parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
