@@ -14,11 +14,12 @@ from waifu import application, user_collection, waifu_collection
 
 _PAGE = 15
 _MEDALS = {
-    "⚪ Common": "⚪",
-    "🟣 Rare":   "🟣",
-    "🟡 Legendary": "🟡",
-    "🟢 Medium": "🟢",
+    "⚪ Common":          "⚪",
+    "🟣 Rare":            "🟣",
+    "🟡 Legendary":       "🟡",
+    "🟢 Medium":          "🟢",
     "💮 Special Edition": "💮",
+    "🔞 Extreme":         "🔞",
 }
 
 
