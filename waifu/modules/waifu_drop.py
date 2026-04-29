@@ -7,15 +7,7 @@ Core game loop:
   - /guess to claim
   - /fav to favourite
   - Anti-spam (10 consecutive messages from same user → 10-min ignore)
-
-Bug fixes vs previous version:
-  1. _active_char is cleared immediately after a correct guess so the same
-     drop cannot be guessed twice. Previously it lingered until the NEXT drop.
-  2. _sent_ids now uses a rolling window (capped at half the catalogue size,
-     minimum 20). The old "len(sent)==len(all_chars)" reset condition was
-     never triggered when new characters were added to the DB while the bot
-     was running, permanently blacklisting those characters from reappearing.
-  3. XP is now awarded for a correct guess (50 XP, configurable).
+  - Auto-delete drop message on claim OR after 10 minutes
 """
 import asyncio
 import random
@@ -37,18 +29,18 @@ from waifu.config import Config
 
 # ── Per-chat in-memory state ──────────────────────────────────────────────────
 _active_char:      dict[int, dict]  = {}   # chat_id → currently active character
+_active_msg:       dict[int, int]   = {}   # chat_id → drop message_id
 _claimed:          dict[int, int]   = {}   # chat_id → user_id who claimed it
 _msg_counts:       dict[int, int]   = {}   # chat_id → message counter
 _last_user:        dict[int, dict]  = {}   # chat_id → {user_id, count}
 _warned:           dict[int, float] = {}   # user_id → timestamp of last warning
-# Rolling window of recently sent char IDs per chat — capped dynamically
-_sent_ids:         dict[int, list]  = {}
+_sent_ids:         dict[int, list]  = {}   # rolling window of recently sent char IDs
 _registered_chats: set[int]         = set()
 
 scheduler = AsyncIOScheduler(timezone="UTC")
 
-# XP reward for a correct guess
-_XP_PER_GUESS = 50
+_XP_PER_GUESS    = 50
+_DROP_EXPIRE_SEC = 600  # 10 minutes
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -60,11 +52,45 @@ async def _chat_frequency(chat_id: int) -> int:
 
 
 def _rolling_window_size(total_chars: int) -> int:
-    """
-    How many recently-sent IDs to remember before a character can reappear.
-    Capped at half the catalogue (minimum 20) so even a 1-character DB works.
-    """
     return max(20, total_chars // 2)
+
+
+async def _delete_drop_message(bot, chat_id: int, message_id: int) -> None:
+    """Safely delete the drop message."""
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def _expire_drop(bot, chat_id: int, char_id: str) -> None:
+    """Called after 10 minutes — delete drop if still unclaimed."""
+    await asyncio.sleep(_DROP_EXPIRE_SEC)
+
+    # Check if same char is still active (not yet claimed)
+    current = _active_char.get(chat_id)
+    if not current or current.get("id") != char_id:
+        return  # already claimed or replaced
+
+    # Clear state
+    _active_char.pop(chat_id, None)
+    _claimed.pop(chat_id, None)
+
+    # Delete the drop message
+    msg_id = _active_msg.pop(chat_id, None)
+    if msg_id:
+        await _delete_drop_message(bot, chat_id, msg_id)
+        LOGGER.info("Drop expired and deleted in chat %s: %s", chat_id, char_id)
+
+    # Send expiry notice
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="⏰ <b>The character got away!</b>\n<i>No one claimed them in time...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
 
 
 async def _send_drop(chat_id: int, bot) -> None:
@@ -76,11 +102,8 @@ async def _send_drop(chat_id: int, bot) -> None:
 
     window = _rolling_window_size(len(all_chars))
     sent   = _sent_ids.get(chat_id, [])
-
-    # Characters not in the rolling window
     unsent = [c for c in all_chars if c["id"] not in sent]
 
-    # If every character has been seen recently, clear the window and start fresh
     if not unsent:
         _sent_ids[chat_id] = []
         unsent = all_chars
@@ -89,28 +112,33 @@ async def _send_drop(chat_id: int, bot) -> None:
 
     char = random.choice(unsent)
 
-    # Append to rolling window; trim to keep only the most recent `window` entries
     new_sent = sent + [char["id"]]
     _sent_ids[chat_id] = new_sent[-window:]
 
-    # Register as the active drop — clear any previous claim state
     _active_char[chat_id] = char
-    _claimed.pop(chat_id, None)   # ← fresh drop, anyone can claim
+    _claimed.pop(chat_id, None)
 
     try:
-        await bot.send_photo(
+        msg = await bot.send_photo(
             chat_id=chat_id,
             photo=char["img_url"],
             caption=(
                 f"✨ <b>A new character appeared!</b>\n\n"
-                f"<i>Use /guess [name] to add them to your harem!</i>"
+                f"<i>Use /guess [name] to add them to your harem!</i>\n"
+                f"⏰ <i>Disappears in 10 minutes!</i>"
             ),
             parse_mode=ParseMode.HTML,
         )
+        # Store message ID for deletion later
+        _active_msg[chat_id] = msg.message_id
+
         LOGGER.info("Drop sent to chat %s: %s (%s)",
                     chat_id, char["name"], char.get("rarity", "?"))
+
+        # Schedule auto-expiry after 10 minutes
+        asyncio.create_task(_expire_drop(bot, chat_id, char["id"]))
+
     except Exception as e:
-        # Roll back state if we couldn't actually post the message
         _active_char.pop(chat_id, None)
         LOGGER.warning("Drop failed in chat %s: %s", chat_id, e)
 
@@ -146,14 +174,13 @@ async def message_counter(update: Update, context: CallbackContext) -> None:
     user_id = update.effective_user.id
     _registered_chats.add(chat_id)
 
-    # Anti-spam: 10 consecutive messages from the same user → 10-min ignore
     last = _last_user.get(chat_id)
     if last and last["user_id"] == user_id:
         last["count"] += 1
         if last["count"] >= 10:
             warned_at = _warned.get(user_id, 0)
             if time.time() - warned_at < 600:
-                return   # still within the ignore window
+                return
             _warned[user_id] = time.time()
             await update.message.reply_text(
                 f"⚠️ {escape(update.effective_user.first_name)}, slow down!\n"
@@ -176,12 +203,10 @@ async def guess(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
 
-    # No active drop in this chat
     char = _active_char.get(chat_id)
     if not char:
-        return   # silent — no character is waiting
+        return
 
-    # Already claimed in this drop session
     if chat_id in _claimed:
         await update.message.reply_text(
             "❌ Already claimed by someone else! Wait for the next character."
@@ -193,12 +218,10 @@ async def guess(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("Usage: /guess <character name>")
         return
 
-    # Reject obviously malicious input
     if any(bad in user_guess for bad in ("()", "&&", "||", "<script")):
         await update.message.reply_text("❌ Invalid characters in guess.")
         return
 
-    # Name matching: full name match OR any single word of the name
     name_parts = char["name"].lower().split()
     correct = (
         sorted(name_parts) == sorted(user_guess.split())
@@ -210,10 +233,15 @@ async def guess(update: Update, context: CallbackContext) -> None:
         return
 
     # ── Correct guess ─────────────────────────────────────────────────────────
-    _claimed[chat_id]    = user_id
+    _claimed[chat_id] = user_id
     _active_char.pop(chat_id, None)
 
-    # ── Persist to user document (upsert — never insert_one to avoid dup-key) ──
+    # Delete the drop message immediately
+    msg_id = _active_msg.pop(chat_id, None)
+    if msg_id:
+        await _delete_drop_message(context.bot, chat_id, msg_id)
+
+    # ── Persist to DB ─────────────────────────────────────────────────────────
     u = update.effective_user
     await user_collection.update_one(
         {"id": user_id},
@@ -230,7 +258,6 @@ async def guess(update: Update, context: CallbackContext) -> None:
         upsert=True,
     )
 
-    # ── Group totals ──────────────────────────────────────────────────────────
     await group_user_totals_collection.update_one(
         {"user_id": user_id, "group_id": chat_id},
         {"$set":  {"username": u.username, "first_name": u.first_name},
