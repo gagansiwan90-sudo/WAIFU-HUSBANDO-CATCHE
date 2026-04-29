@@ -1,7 +1,7 @@
 """
 modules/couple.py
 
-/couple — Shows a random couple of the day from married users.
+/couple — Shows a random couple of the day from users in the same group.
 """
 import random
 from html import escape
@@ -11,63 +11,46 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import CallbackContext, CommandHandler
 
-from waifu import application, user_collection
+from waifu import application, group_user_totals_collection, user_collection
 
 
 async def couple(update: Update, context: CallbackContext) -> None:
-    # Get all married users
-    married_users = await user_collection.find(
-        {"spouse_id": {"$exists": True, "$ne": None}}
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("💔 This command only works in groups!")
+        return
+
+    chat_id = update.effective_chat.id
+
+    # Get users who have been active in this group
+    group_users = await group_user_totals_collection.find(
+        {"group_id": chat_id}
     ).to_list(length=1000)
 
-    if not married_users or len(married_users) < 2:
+    if not group_users or len(group_users) < 2:
         await update.message.reply_text(
-            "💔 No couples found yet!\n"
-            "Use /marry to find your soulmate! 💍"
+            "💔 Not enough users in this group yet!\n"
+            "More people need to play first! 🌸"
         )
         return
 
-    # Build unique couples (avoid duplicate pairs)
-    seen = set()
-    couples = []
-    for user in married_users:
-        uid = user["id"]
-        sid = user.get("spouse_id")
-        if not sid:
-            continue
-        pair = tuple(sorted([uid, sid]))
-        if pair in seen:
-            continue
-        seen.add(pair)
-
-        # Get spouse doc
-        spouse_doc = await user_collection.find_one({"id": sid})
-        if not spouse_doc:
-            continue
-
-        couples.append((user, spouse_doc))
-
-    if not couples:
-        await update.message.reply_text(
-            "💔 No couples found yet!\n"
-            "Use /marry to find your soulmate! 💍"
-        )
-        return
-
-    # Pick a random couple using today's date as seed for consistency
+    # Pick 2 random unique users using today's date as seed
     today = datetime.now().strftime("%Y-%m-%d")
-    random.seed(today)
-    user1, user2 = random.choice(couples)
+    random.seed(today + str(chat_id))
+    picked = random.sample(group_users, 2)
     random.seed()
 
-    name1 = escape(user1.get("first_name", "Unknown"))
-    name2 = escape(user2.get("first_name", "Unknown"))
-    uid1  = user1["id"]
-    uid2  = user2["id"]
+    uid1 = picked[0]["user_id"]
+    uid2 = picked[1]["user_id"]
 
-    # Count combined characters
-    chars1 = len(user1.get("characters", []))
-    chars2 = len(user2.get("characters", []))
+    # Get full user docs for character count
+    user1 = await user_collection.find_one({"id": uid1})
+    user2 = await user_collection.find_one({"id": uid2})
+
+    name1 = escape(picked[0].get("first_name", "Unknown"))
+    name2 = escape(picked[1].get("first_name", "Unknown"))
+
+    chars1   = len(user1.get("characters", [])) if user1 else 0
+    chars2   = len(user2.get("characters", [])) if user2 else 0
     combined = chars1 + chars2
 
     text = (
