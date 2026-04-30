@@ -210,10 +210,8 @@ async def guess(update: Update, context: CallbackContext) -> None:
         return
 
     # ── Correct guess ─────────────────────────────────────────────────────────
-    # Mark claimed AND immediately clear the active drop so no second guess
-    # is possible for this session — even if another user is mid-typing.
     _claimed[chat_id]    = user_id
-    _active_char.pop(chat_id, None)   # ← KEY FIX: drop is over, clear it now
+    _active_char.pop(chat_id, None)
 
     # ── Persist to user document (upsert — never insert_one to avoid dup-key) ──
     u = update.effective_user
@@ -302,3 +300,4 @@ application.add_handler(MessageHandler(
     message_counter,
     block=False,
 ))
+  
