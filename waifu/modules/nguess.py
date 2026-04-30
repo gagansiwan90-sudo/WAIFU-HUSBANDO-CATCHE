@@ -19,7 +19,7 @@ from waifu import application, collection, user_collection
 _COINS_REWARD  = 50
 _XP_REWARD     = 25
 _TOTAL_ROUNDS  = 5
-_ALLOWED_GROUP = -1003865428134  # Only this group can use nguess
+_ALLOWED_GROUP = -1003865428134
 
 # Active games: chat_id → {chars, current_index, scores}
 _active_games: dict[int, dict] = {}
@@ -49,7 +49,6 @@ async def _send_character(chat_id: int, bot, game: dict) -> None:
 async def nguess(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
 
-    # Only allowed in specific group — silent ignore everywhere else
     if chat_id != _ALLOWED_GROUP:
         return
 
@@ -63,7 +62,6 @@ async def nguess(update: Update, context: CallbackContext) -> None:
         )
         return
 
-    # Get random characters
     all_chars = await collection.find({}).to_list(length=5000)
     if len(all_chars) < _TOTAL_ROUNDS:
         await update.message.reply_text(
@@ -103,6 +101,7 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     if chat_id != _ALLOWED_GROUP:
         return
 
+    # No active game — return immediately without blocking
     game = _active_games.get(chat_id)
     if not game:
         return
@@ -112,7 +111,6 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     idx        = game["current_index"]
     char       = game["chars"][idx]
 
-    # Name matching
     name_parts = char["name"].lower().split()
     correct = (
         sorted(name_parts) == sorted(user_guess.split())
@@ -120,16 +118,14 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     )
 
     if not correct:
-        return  # Silent — let them keep trying
+        return
 
-    # ── Correct guess ──────────────────────────────────────────────────────
     uid = user.id
     if uid not in game["scores"]:
         game["scores"][uid] = {"name": user.first_name, "coins": 0, "correct": 0}
     game["scores"][uid]["coins"]   += _COINS_REWARD
     game["scores"][uid]["correct"] += 1
 
-    # Give coins + XP
     await user_collection.update_one(
         {"id": uid},
         {
@@ -153,11 +149,9 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         parse_mode=ParseMode.HTML,
     )
 
-    # Move to next round
     game["current_index"] += 1
 
     if game["current_index"] >= _TOTAL_ROUNDS:
-        # Game over
         _active_games.pop(chat_id, None)
 
         scores = game["scores"]
@@ -183,14 +177,12 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         )
         return
 
-    # Send next character
     await _send_character(chat_id, context.bot, game)
 
 
 async def nguess_stop(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
 
-    # Only in allowed group
     if chat_id != _ALLOWED_GROUP:
         return
 
@@ -209,11 +201,13 @@ async def nguess_stop(update: Update, context: CallbackContext) -> None:
     )
 
 
+# IMPORTANT: nguess_message must be registered AFTER waifu_drop's message_counter
+# Using block=False so both handlers run concurrently without blocking each other
 application.add_handler(CommandHandler("nguess",      nguess,      block=False))
 application.add_handler(CommandHandler("nguess_stop", nguess_stop, block=False))
 application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
     nguess_message,
     block=False,
-))
-      
+), group=1)  # group=1 means it runs AFTER group=0 (waifu_drop's message_counter)
+    
