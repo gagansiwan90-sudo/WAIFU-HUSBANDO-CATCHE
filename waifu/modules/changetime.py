@@ -1,43 +1,81 @@
-from pymongo import  ReturnDocument
-from pyrogram.enums import ChatMemberStatus, ChatType
-from shivu import user_totals_collection, shivuu
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from pymongo import ReturnDocument
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import CommandHandler, CallbackContext, filters, MessageHandler
+from waifu import application, user_totals_collection
+from waifu.config import Config
 
-ADMINS = [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+_MIN, _MAX = 5, 10_000
 
 
-@shivuu.on_message(filters.command("changetime"))
-async def change_time(client: Client, message: Message):
-    
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    member = await shivuu.get_chat_member(chat_id,user_id)
-        
+async def _is_admin(update: Update, context: CallbackContext) -> bool:
+    m = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+    return m.status in ("administrator", "creator")
 
-    if member.status not in ADMINS :
-        await message.reply_text('You are not an Admin.')
+
+async def get_freq(chat_id: int) -> int:
+    doc = await user_totals_collection.find_one({"chat_id": chat_id})
+    return int(doc["message_frequency"]) if doc and "message_frequency" in doc else Config.DEFAULT_MSG_FREQUENCY
+
+
+async def changetime(update: Update, context: CallbackContext) -> None:
+    # Only works in groups
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ This command only works in groups!")
         return
 
-    try:
-        args = message.command
-        if len(args) != 2:
-            await message.reply_text('Please use: /changetime NUMBER')
-            return
+    if not await _is_admin(update, context):
+        await update.message.reply_text("❌ Admins only.")
+        return
 
-        new_frequency = int(args[1])
-        if new_frequency < 100:
-            await message.reply_text('The message frequency must be greater than or equal to 100.')
-            return
+    if not context.args or not context.args[0].lstrip("-").isdigit():
+        cur = await get_freq(update.effective_chat.id)
+        await update.message.reply_text(
+            f"📋 Current: every <b>{cur}</b> messages\n"
+            f"Usage: /changetime &lt;{_MIN}–{_MAX}&gt;\n"
+            f"Reset: /resettime",
+            parse_mode=ParseMode.HTML)
+        return
 
+    n = int(context.args[0])
+    if n < _MIN:
+        await update.message.reply_text(f"❌ Minimum {_MIN}.")
+        return
+    if n > _MAX:
+        await update.message.reply_text(f"❌ Maximum {_MAX}.")
+        return
+
+    old = await get_freq(update.effective_chat.id)
+    await user_totals_collection.find_one_and_update(
+        {"chat_id": update.effective_chat.id},
+        {"$set": {"message_frequency": n}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    await update.message.reply_text(
+        f"✅ Drop frequency: <b>{old}</b> → <b>{n}</b> messages",
+        parse_mode=ParseMode.HTML)
+
+
+async def resettime(update: Update, context: CallbackContext) -> None:
+    # Only works in groups
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ This command only works in groups!")
+        return
+
+    if not await _is_admin(update, context):
+        await update.message.reply_text("❌ Admins only.")
+        return
+
+    await user_totals_collection.update_one(
+        {"chat_id": update.effective_chat.id},
+        {"$unset": {"message_frequency": ""}},
+    )
+    await update.message.reply_text(
+        f"✅ Reset to default: every <b>{Config.DEFAULT_MSG_FREQUENCY}</b> messages.",
+        parse_mode=ParseMode.HTML)
+
+
+application.add_handler(CommandHandler("changetime", changetime, filters=filters.ChatType.GROUPS, block=False))
+application.add_handler(CommandHandler("resettime", resettime, filters=filters.ChatType.GROUPS, block=False))
     
-        chat_frequency = await user_totals_collection.find_one_and_update(
-            {'chat_id': str(chat_id)},
-            {'$set': {'message_frequency': new_frequency}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-
-        await message.reply_text(f'Successfully changed {new_frequency}')
-    except Exception as e:
-        await message.reply_text(f'Failed to change {str(e)}')
