@@ -2,11 +2,13 @@
 modules/nguess.py
 
 /nguess — Start a name guessing game.
-5 characters appear one by one.
-Guess the name via normal text message to earn coins + XP.
-Character does NOT get added to harem.
+- Random rounds (bot decides 3-8)
+- Auto stop when bot wants
+- Message delete on wrong/correct
+- Coins + XP rewards
 RESTRICTED to specific group only.
 """
+import asyncio
 import random
 from html import escape
 
@@ -18,25 +20,43 @@ from waifu import application, collection, user_collection
 
 _COINS_REWARD  = 50
 _XP_REWARD     = 25
-_TOTAL_ROUNDS  = 5
 _ALLOWED_GROUP = -1003865428134
+_DELETE_DELAY  = 3   # seconds to delete wrong messages
 
-# Active games: chat_id → {chars, current_index, scores}
+# Active games: chat_id → game data
 _active_games: dict[int, dict] = {}
 
 
+async def _safe_delete(bot, chat_id: int, message_id: int) -> None:
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def _delete_after(bot, chat_id: int, message_id: int, delay: int) -> None:
+    await asyncio.sleep(delay)
+    await _safe_delete(bot, chat_id, message_id)
+
+
 async def _send_character(chat_id: int, bot, game: dict) -> None:
-    idx  = game["current_index"]
-    char = game["chars"][idx]
+    idx   = game["current_index"]
+    char  = game["chars"][idx]
+    total = game["total_rounds"]
+
+    # Delete previous character message
+    prev_msg = game.get("message_id")
+    if prev_msg:
+        await _safe_delete(bot, chat_id, prev_msg)
 
     try:
         msg = await bot.send_photo(
             chat_id=chat_id,
             photo=char["img_url"],
             caption=(
-                f"🎯 <b>Round {idx + 1}/{_TOTAL_ROUNDS}</b>\n\n"
+                f"🎯 <b>Round {idx + 1}/{total}</b>\n\n"
                 f"❓ <b>Who is this character?</b>\n\n"
-                f"💰 Reward: <b>{_COINS_REWARD} coins + {_XP_REWARD} XP</b>\n"
+                f"💰 <b>{_COINS_REWARD} coins + {_XP_REWARD} XP</b>\n\n"
                 f"<i>Type the character name to guess!</i>"
             ),
             parse_mode=ParseMode.HTML,
@@ -55,41 +75,47 @@ async def nguess(update: Update, context: CallbackContext) -> None:
     if chat_id in _active_games:
         game = _active_games[chat_id]
         idx  = game["current_index"]
+        total = game["total_rounds"]
         await update.message.reply_text(
-            f"⏳ A game is already running!\n"
-            f"Round <b>{idx + 1}/{_TOTAL_ROUNDS}</b> in progress.",
+            f"⏳ <b>Game already running!</b>\n"
+            f"Round <b>{idx + 1}/{total}</b> in progress.",
             parse_mode=ParseMode.HTML,
         )
         return
 
     all_chars = await collection.find({}).to_list(length=5000)
-    if len(all_chars) < _TOTAL_ROUNDS:
-        await update.message.reply_text(
-            f"❌ Not enough characters in DB! Need at least {_TOTAL_ROUNDS}."
-        )
+    if len(all_chars) < 3:
+        await update.message.reply_text("❌ Not enough characters in DB!")
         return
 
-    chars = random.sample(all_chars, _TOTAL_ROUNDS)
+    # Bot decides random rounds between 3-8
+    total_rounds = random.randint(3, 8)
+    chars        = random.sample(all_chars, total_rounds)
 
     game = {
         "chars":         chars,
         "current_index": 0,
+        "total_rounds":  total_rounds,
         "message_id":    None,
         "scores":        {},
     }
     _active_games[chat_id] = game
 
-    await update.message.reply_text(
+    start_msg = await update.message.reply_text(
         f"🎮 <b>NGuess Game Started!</b>\n\n"
         f"📋 <b>Rules:</b>\n"
-        f"┣ {_TOTAL_ROUNDS} characters will appear\n"
-        f"┣ Type the character name to guess\n"
-        f"┣ Correct → next character appears\n"
-        f"┗ Complete all {_TOTAL_ROUNDS} to finish!\n\n"
-        f"💰 <b>{_COINS_REWARD} coins + {_XP_REWARD} XP</b> per correct guess\n\n"
+        f"┣ Type character name to guess\n"
+        f"┣ Correct → next character\n"
+        f"┗ Bot decides when to stop!\n\n"
+        f"💰 <b>{_COINS_REWARD} coins + {_XP_REWARD} XP</b> per correct\n\n"
         f"<i>Get ready...</i> 🎯",
         parse_mode=ParseMode.HTML,
     )
+
+    # Delete start message after 5 seconds
+    asyncio.create_task(_delete_after(context.bot, chat_id, start_msg.message_id, 5))
+    # Delete /nguess command message
+    asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, 2))
 
     await _send_character(chat_id, context.bot, game)
 
@@ -97,11 +123,9 @@ async def nguess(update: Update, context: CallbackContext) -> None:
 async def nguess_message(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
 
-    # Only respond in allowed group
     if chat_id != _ALLOWED_GROUP:
         return
 
-    # No active game — return immediately without blocking
     game = _active_games.get(chat_id)
     if not game:
         return
@@ -118,8 +142,15 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     )
 
     if not correct:
+        # Delete wrong guess + user message
+        wrong_msg = await update.message.reply_text(
+            f"❌ Wrong! Look at the character again 👀"
+        )
+        asyncio.create_task(_delete_after(context.bot, chat_id, wrong_msg.message_id, _DELETE_DELAY))
+        asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, _DELETE_DELAY))
         return
 
+    # ── Correct guess ──────────────────────────────────────────────────────
     uid = user.id
     if uid not in game["scores"]:
         game["scores"][uid] = {"name": user.first_name, "coins": 0, "correct": 0}
@@ -139,7 +170,10 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         upsert=True,
     )
 
-    await update.message.reply_text(
+    # Delete user's correct guess message
+    asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, 1))
+
+    correct_msg = await update.message.reply_text(
         f"✅ <b>Correct!</b> "
         f"<a href='tg://user?id={uid}'>{escape(user.first_name)}</a> got it!\n\n"
         f"🌸 <b>{escape(char['name'])}</b>\n"
@@ -149,9 +183,13 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         parse_mode=ParseMode.HTML,
     )
 
+    # Delete correct reply after 5 seconds
+    asyncio.create_task(_delete_after(context.bot, chat_id, correct_msg.message_id, 5))
+
     game["current_index"] += 1
 
-    if game["current_index"] >= _TOTAL_ROUNDS:
+    if game["current_index"] >= game["total_rounds"]:
+        # Game over
         _active_games.pop(chat_id, None)
 
         scores = game["scores"]
@@ -169,14 +207,19 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         else:
             scoreboard = "No one scored!"
 
-        await update.message.reply_text(
-            f"🎮 <b>Game Over!</b>\n\n"
-            f"🏆 <b>Final Scores:</b>\n{scoreboard}\n\n"
-            f"<i>Play again with /nguess!</i>",
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🎮 <b>Game Over!</b>\n\n"
+                f"🏆 <b>Final Scores:</b>\n{scoreboard}\n\n"
+                f"<i>Play again with /nguess!</i>"
+            ),
             parse_mode=ParseMode.HTML,
         )
         return
 
+    # Small delay before next character
+    await asyncio.sleep(2)
     await _send_character(chat_id, context.bot, game)
 
 
@@ -187,27 +230,34 @@ async def nguess_stop(update: Update, context: CallbackContext) -> None:
         return
 
     if chat_id not in _active_games:
-        await update.message.reply_text("❌ No active NGuess game!")
+        msg = await update.message.reply_text("❌ No active NGuess game!")
+        asyncio.create_task(_delete_after(context.bot, chat_id, msg.message_id, 3))
+        asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, 3))
         return
 
     game = _active_games.pop(chat_id)
     idx  = game["current_index"]
+    total = game["total_rounds"]
+
+    # Delete current character message
+    if game.get("message_id"):
+        await _safe_delete(context.bot, chat_id, game["message_id"])
+
+    asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, 2))
 
     await update.message.reply_text(
         f"🛑 <b>Game stopped!</b>\n"
-        f"Completed <b>{idx}/{_TOTAL_ROUNDS}</b> rounds.\n\n"
+        f"Completed <b>{idx}/{total}</b> rounds.\n\n"
         f"<i>Start again with /nguess</i>",
         parse_mode=ParseMode.HTML,
     )
 
 
-# IMPORTANT: nguess_message must be registered AFTER waifu_drop's message_counter
-# Using block=False so both handlers run concurrently without blocking each other
 application.add_handler(CommandHandler("nguess",      nguess,      block=False))
 application.add_handler(CommandHandler("nguess_stop", nguess_stop, block=False))
 application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
     nguess_message,
     block=False,
-), group=1)  # group=1 means it runs AFTER group=0 (waifu_drop's message_counter)
+), group=1)
     
