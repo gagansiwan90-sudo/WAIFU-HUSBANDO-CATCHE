@@ -16,6 +16,7 @@ from waifu import application, collection, user_collection
 
 _ALLOWED_GROUP = -1003865428134
 _COOLDOWN      = 86_400  # 24 hours
+_GROUP_LINK    = "https://t.me/Anime_InfinityChatGroup"
 
 
 def _fmt_time(secs: int) -> str:
@@ -33,7 +34,7 @@ async def hclaim(update: Update, context: CallbackContext) -> None:
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "✨ Join Our Group",
-                url=f"https://t.me/+{str(_ALLOWED_GROUP)[4:]}"
+                url=_GROUP_LINK,
             )
         ]])
         await update.message.reply_text(
@@ -123,3 +124,4 @@ async def hclaim(update: Update, context: CallbackContext) -> None:
 
 
 application.add_handler(CommandHandler("hclaim", hclaim, block=False))
+    
