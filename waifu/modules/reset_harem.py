@@ -15,7 +15,7 @@ from waifu import application, db
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG — Apna Telegram user ID daalo
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OWNER_ID = 7584321927  # 👈 Apna Telegram ID yahan daalo
+OWNER_ID = 8546535996  # 👈 Apna Telegram ID yahan daalo
 
 # MongoDB collections
 users_col   = db["users"]
