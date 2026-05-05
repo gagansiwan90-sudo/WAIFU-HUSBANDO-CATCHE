@@ -15,7 +15,7 @@ from waifu import application, db
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG — Apna Telegram user ID daalo
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OWNER_ID =  8546535996 # 👈 Apna Telegram ID yahan daalo
+OWNER_ID = 7584321927  # 👈 Apna Telegram ID yahan daalo
 
 # MongoDB collections
 users_col   = db["users"]
@@ -97,11 +97,8 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  REGISTER
+#  DIRECT REGISTRATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def register(app=None):
-    target = app or application
-    target.add_handler(CommandHandler("resetallharem", resetallharem_command))
-    target.add_handler(CallbackQueryHandler(reset_callback, pattern="^(confirm|cancel)_reset_harem$"))
-      
+application.add_handler(CommandHandler("resetallharem", resetallharem_command))
+application.add_handler(CallbackQueryHandler(reset_callback, pattern="^(confirm|cancel)_reset_harem$"))
