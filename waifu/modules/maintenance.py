@@ -16,7 +16,7 @@ from waifu import application, db
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OWNER_ID = 8546535996  # 👈 Apna Telegram ID yahan daalo
+OWNER_ID = 8546535996
 
 # MongoDB
 settings_col = db["bot_settings"]
@@ -46,12 +46,12 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = update.effective_message
 
     if user.id != OWNER_ID:
-        return  # Silent — owner nahi hai toh ignore
+        return
 
     args = context.args
     if not args or args[0].lower() not in ("on", "off"):
         await message.reply_text(
-            "⚙️ Usage:\n<code>/maintenance on</code>\n<code>/maintenance off</code>",
+            "Usage:\n/maintenance on\n/maintenance off",
             parse_mode=ParseMode.HTML
         )
         return
@@ -61,56 +61,41 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if state:
         await message.reply_text(
-            "🔴 <b>Maintenance Mode ON</b>\n\n"
-            "Bot ab completely silent hai.\n"
-            "Koi bhi command ya message ka reply nahi dega.",
+            "🔴 <b>Maintenance Mode ON</b>\n\nBot ab completely silent hai.\nKoi bhi command ya message ka reply nahi dega.",
             parse_mode=ParseMode.HTML
         )
     else:
         await message.reply_text(
-            "🟢 <b>Maintenance Mode OFF</b>\n\n"
-            "Bot wapas normal ho gaya!\n"
-            "Sab commands ab kaam karenge. ✅",
+            "🟢 <b>Maintenance Mode OFF</b>\n\nBot wapas normal ho gaya!\nSab commands ab kaam karenge. ✅",
             parse_mode=ParseMode.HTML
         )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  GLOBAL BLOCK HANDLER
-#  Ye sabse pehle run hoga —
-#  maintenance on hone pe sab block
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def block_during_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Maintenance mode on hai toh kuch mat karo.
-    Owner ke messages allow hain (taaki /maintenance off kar sake).
-    """
     user = update.effective_user
 
     # Owner ko block mat karo
     if user and user.id == OWNER_ID:
         return
 
-    # Maintenance check
+    # Maintenance on hai toh sab block
     if await is_maintenance():
-        return  # Complete silence — koi reply nahi
+        raise ApplicationHandlerStop
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  REGISTER
+#  DIRECT REGISTRATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def register(app=None):
-    target = app or application
+from telegram.ext import ApplicationHandlerStop
 
-    # Block handler — group=0 matlab sabse pehle run hoga
-    target.add_handler(
-        MessageHandler(filters.ALL, block_during_maintenance),
-        group=0
-    )
-
-    # /maintenance command
-    target.add_handler(
-        CommandHandler("maintenance", maintenance_command),
-        group=0
+application.add_handler(
+    MessageHandler(filters.ALL, block_during_maintenance),
+    group=-1
 )
-      
+
+application.add_handler(
+    CommandHandler("maintenance", maintenance_command)
+)
