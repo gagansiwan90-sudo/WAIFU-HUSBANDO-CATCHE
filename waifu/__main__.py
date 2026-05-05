@@ -94,7 +94,14 @@ async def _run_bot() -> None:
     from waifu import application
     application.post_init = _post_init
 
-    # ── Step 4: Async polling start karo ─────────────
+    # ── Step 4: Custom modules register karo ─────────
+    from waifu.modules.hclaim import register as register_hclaim
+    from waifu.modules.reset_harem import register as register_reset
+    register_hclaim(application)
+    register_reset(application)
+    LOGGER.info("Custom modules registered: hclaim, reset_harem")
+
+    # ── Step 5: Async polling start karo ─────────────
     LOGGER.info("Starting bot (async polling)…")
     async with application:
         await application.initialize()
@@ -126,4 +133,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
+                    
