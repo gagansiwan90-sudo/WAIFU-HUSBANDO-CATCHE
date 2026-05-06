@@ -1,6 +1,6 @@
 """
 modules/profile.py — /profile command showing full user stats.
-Updated with correct rarity numbers (1-6).
+Cool aesthetic design with user PFP.
 """
 import math
 import random
@@ -26,7 +26,7 @@ RARITY_MAP = {
     6: "🔞 Extreme",
 }
 
-RARITY_ORDER = [1, 4, 2, 3, 5, 6]  # Common → Medium → Rare → Legendary → Special → Extreme
+RARITY_ORDER = [1, 4, 2, 3, 5, 6]
 
 VALUE_MAP = {
     1: 100,
@@ -35,6 +35,15 @@ VALUE_MAP = {
     4: 300,
     5: 5000,
     6: 8000,
+}
+
+RARITY_STARS = {
+    1: "★☆☆☆☆☆",
+    4: "★★☆☆☆☆",
+    2: "★★★☆☆☆",
+    3: "★★★★☆☆",
+    5: "★★★★★☆",
+    6: "★★★★★★",
 }
 
 
@@ -47,7 +56,6 @@ def _xp_for_level(level: int) -> int:
 
 
 def _calc_level(xp: int) -> tuple[int, int, int]:
-    """Returns (level, xp_into_level, xp_needed)."""
     level = 1
     while _xp_for_level(level + 1) <= xp:
         level += 1
@@ -56,17 +64,26 @@ def _calc_level(xp: int) -> tuple[int, int, int]:
     return level, xp - floor, nxt - floor
 
 
-def _bar(value: int, maximum: int, length: int = 10) -> str:
+def _xp_bar(value: int, maximum: int, length: int = 10) -> str:
     filled = int(length * value / max(maximum, 1))
-    return "▓" * filled + "░" * (length - filled)
+    empty  = length - filled
+    return "🟪" * filled + "⬛" * empty
 
 
-def _get_rarity_label(rarity) -> str:
-    """Rarity number ya string dono handle karta hai."""
+def _level_title(level: int) -> str:
+    if level >= 50: return "👑 𝗟𝗲𝗴𝗲𝗻𝗱"
+    if level >= 40: return "💎 𝗘𝗹𝗶𝘁𝗲"
+    if level >= 30: return "🔥 𝗘𝘅𝗽𝗲𝗿𝘁"
+    if level >= 20: return "⚡ 𝗔𝗱𝘃𝗮𝗻𝗰𝗲𝗱"
+    if level >= 10: return "🌟 𝗜𝗻𝘁𝗲𝗿𝗺𝗲𝗱𝗶𝗮𝘁𝗲"
+    return "🌱 𝗡𝗼𝘃𝗶𝗰𝗲"
+
+
+def _get_rarity_num(rarity) -> int:
     if isinstance(rarity, int):
-        return RARITY_MAP.get(rarity, "⚪ Common")
-    # Purane string format ke liye fallback
-    return str(rarity) if rarity else "⚪ Common"
+        return rarity
+    rev = {v: k for k, v in RARITY_MAP.items()}
+    return rev.get(rarity, 1)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -74,13 +91,14 @@ def _get_rarity_label(rarity) -> str:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def profile(update: Update, context: CallbackContext) -> None:
-    # Support /profile or reply to another user
+    # Target user
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
         u_doc  = await user_collection.find_one({"id": target.id})
     elif context.args:
         username = context.args[0].lstrip("@")
-        u_doc = await user_collection.find_one({"username": username})
+        u_doc    = await user_collection.find_one({"username": username})
+        target   = None
     else:
         target = update.effective_user
         u_doc  = await user_collection.find_one({"id": target.id})
@@ -103,72 +121,88 @@ async def profile(update: Update, context: CallbackContext) -> None:
     unique_count = len(unique_chars)
     total_count  = len(chars)
 
-    # ── Rarity breakdown ────────────────────────────────────────────────
+    # ── Rarity breakdown ──────────────────────────────────────────────
     rarity_count: dict[int, int] = {}
     for c in unique_chars:
-        r = c.get("rarity", 1)
-        if isinstance(r, str):
-            # String se number map karo (purane data ke liye)
-            rev = {v: k for k, v in RARITY_MAP.items()}
-            r = rev.get(r, 1)
+        r = _get_rarity_num(c.get("rarity", 1))
         rarity_count[r] = rarity_count.get(r, 0) + 1
 
-    # ── XP / Level ──────────────────────────────────────────────────────
+    # ── XP / Level ────────────────────────────────────────────────────
     level, xp_in, xp_need = _calc_level(xp)
-    bar = _bar(xp_in, xp_need, 12)
+    bar    = _xp_bar(xp_in, xp_need, 10)
+    title  = _level_title(level)
 
-    # ── Collection value ────────────────────────────────────────────────
+    # ── Collection value ──────────────────────────────────────────────
     total_value = sum(
-        VALUE_MAP.get(c.get("rarity", 1) if isinstance(c.get("rarity"), int) else 1, 100)
+        VALUE_MAP.get(_get_rarity_num(c.get("rarity", 1)), 100)
         for c in unique_chars
     )
 
-    # ── Rarity lines ────────────────────────────────────────────────────
+    # ── Rarity lines ──────────────────────────────────────────────────
     rarity_lines = []
     for r_num in RARITY_ORDER:
         count = rarity_count.get(r_num, 0)
         if count == 0:
             continue
         label = RARITY_MAP[r_num]
-        rarity_lines.append(f"  {label}: <b>{count}</b>")
+        rarity_lines.append(f"  {label} × <b>{count}</b>")
+    rarity_text = "\n".join(rarity_lines) if rarity_lines else "  None yet 🌸"
 
-    rarity_text = "\n".join(rarity_lines) if rarity_lines else "  None yet"
-
-    # ── Rarest char ─────────────────────────────────────────────────────
+    # ── Rarest char ───────────────────────────────────────────────────
     rarest_line = ""
-    for r_num in [6, 5, 3, 2, 4, 1]:  # Highest to lowest
+    for r_num in [6, 5, 3, 2, 4, 1]:
         match = next(
-            (c for c in unique_chars
-             if (c.get("rarity") == r_num or
-                 RARITY_MAP.get(r_num) == c.get("rarity"))),
-            None
+            (c for c in unique_chars if _get_rarity_num(c.get("rarity", 1)) == r_num),
+            None,
         )
         if match:
-            rarest_name = escape(match.get("name", "Unknown"))
-            rarest_line = f"\n🏆 <b>Rarest:</b> {rarest_name} ({RARITY_MAP.get(r_num, '?')})"
+            rarest_name  = escape(match.get("name", "Unknown"))
+            rarest_label = RARITY_MAP.get(r_num, "?")
+            rarest_stars = RARITY_STARS.get(r_num, "")
+            rarest_line  = f"\n🏆 <b>Rarest:</b> {rarest_name}\n     {rarest_label}  {rarest_stars}"
             break
 
-    tag  = f"@{username}" if username else f"#{uid}"
+    tag = f"@{username}" if username else f"#{uid}"
+
     text = (
+        f"╔══════════════════════╗\n"
+        f"  🌸 <b>𝗪𝗮𝗶𝗳𝘂𝗛𝘂𝗯 𝗣𝗿𝗼𝗳𝗶𝗹𝗲</b>\n"
+        f"╚══════════════════════╝\n\n"
         f"👤 <b>{first_name}</b>  <code>{tag}</code>\n"
-        f"{'─' * 28}\n"
-        f"⭐ Level <b>{level}</b>  [{bar}]\n"
-        f"   <i>{xp_in:,} / {xp_need:,} XP</i>\n\n"
-        f"💰 Coins:      <b>{coins:,}</b>\n"
-        f"🗂 Collection: <b>{unique_count}</b> unique  ({total_count} total)\n"
-        f"💎 Est. Value: <b>{total_value:,}</b> coins\n"
-        f"🎯 Guesses:   <b>{guesses}</b>\n"
-        f"⚔️ Duel wins: <b>{wins}</b>"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{title}  •  <b>Level {level}</b>\n"
+        f"{bar}  <i>{xp_in:,}/{xp_need:,} XP</i>\n\n"
+        f"┌─────────────────────\n"
+        f"│ 💰 <b>Coins:</b>       {coins:,}\n"
+        f"│ 🗂 <b>Collection:</b>  {unique_count} unique ({total_count} total)\n"
+        f"│ 💎 <b>Est. Value:</b>  {total_value:,} coins\n"
+        f"│ 🎯 <b>Guesses:</b>    {guesses}\n"
+        f"│ ⚔️ <b>Duel Wins:</b>  {wins}\n"
+        f"└─────────────────────"
         f"{rarest_line}\n\n"
-        f"<b>✨ Rarity Breakdown:</b>\n"
+        f"✨ <b>𝗥𝗮𝗿𝗶𝘁𝘆 𝗕𝗿𝗲𝗮𝗸𝗱𝗼𝘄𝗻:</b>\n"
         f"{rarity_text}"
     )
 
-    # ── Photo ───────────────────────────────────────────────────────────
+    # ── Photo — try to get user PFP first ─────────────────────────────
     photo: str | None = None
-    if fav_id:
-        fav_char = next((c for c in chars if c["id"] == fav_id), None)
-        photo    = (fav_char or {}).get("img_url")
+
+    # Try user's Telegram profile photo
+    try:
+        if target:
+            photos = await context.bot.get_user_profile_photos(uid, limit=1)
+            if photos and photos.photos:
+                photo = photos.photos[0][-1].file_id
+    except Exception:
+        pass
+
+    # Fallback: fav character image
+    if not photo:
+        if fav_id:
+            fav_char = next((c for c in chars if c["id"] == fav_id), None)
+            photo    = (fav_char or {}).get("img_url")
+
+    # Fallback: bot photo
     if not photo and PHOTO_URL:
         photo = random.choice(PHOTO_URL)
 
