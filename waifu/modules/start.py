@@ -8,12 +8,24 @@ from telegram.ext import CallbackContext, CallbackQueryHandler, CommandHandler
 from waifu import application, BOT_USERNAME, GROUP_ID, PHOTO_URL, SUPPORT_CHAT, UPDATE_CHAT
 from waifu import pm_users as _pm
 
-WELCOME = (
-    "👋 <b>Welcome to Waifu Catcher!</b>\n\n"
-    "I drop random anime characters in groups.\n"
-    "Use <code>/guess</code> to claim them and build your harem!\n\n"
-    "📌 Add me to a group to start collecting!"
-)
+_OWNER_ID = 8546535996
+
+
+def _welcome(first_name: str, user_id: int) -> str:
+    return (
+        f"🌸 <b>𝗪𝗮𝗶𝗳𝘂𝗛𝘂𝗯 𝗩𝗲𝗿𝘀𝗲 💮</b>\n\n"
+        f"✦ <i>Where legends are collected & waifus are claimed...</i> ✦\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👋 <b>𝗪𝗲𝗹𝗰𝗼𝗺𝗲, <a href='tg://user?id={user_id}'>{escape(first_name)}</a>!</b>\n\n"
+        f"⚡ <b>𝗛𝗼𝘄 𝘁𝗼 𝗣𝗹𝗮𝘆:</b>\n"
+        f"┣ 🎴 <b>𝗖𝗵𝗮𝗿𝗮𝗰𝘁𝗲𝗿𝘀</b> drop in groups randomly\n"
+        f"┣ 💬 <b>𝗧𝘆𝗽𝗲</b> /guess to claim them\n"
+        f"┣ 👑 <b>𝗕𝘂𝗶𝗹𝗱</b> your ultimate harem\n"
+        f"┗ 🏆 <b>𝗙𝗹𝗲𝘅</b> your rarest waifus!\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎯 <b>𝗔𝗱𝗱 𝗺𝗲 𝘁𝗼 𝘆𝗼𝘂𝗿 𝗴𝗿𝗼𝘂𝗽 𝗮𝗻𝗱 𝗹𝗲𝘁 𝘁𝗵𝗲 𝗵𝘂𝗻𝘁 𝗯𝗲𝗴𝗶𝗻!</b>"
+    )
+
 
 HELP = (
     "📖 <b>Commands</b>\n\n"
@@ -21,17 +33,27 @@ HELP = (
     "/guess — Claim the active character\n"
     "/harem — Your collection (paginated)\n"
     "/fav [id] — Set favourite character\n"
+    "/check [id] — Check character details\n"
+    "/hclaim — Daily free character claim\n"
     "/profile — Your stats & level\n\n"
     "<b>💰 Economy</b>\n"
     "/daily — Claim daily coins\n"
+    "/weekly — Claim weekly bonus coins\n"
     "/balance — Check your coins\n"
     "/market — Browse listings\n"
     "/sell [id] [price] — List a character\n"
     "/buy [listing_id] — Buy from market\n\n"
+    "<b>🎮 Games</b>\n"
+    "/quiz — Anime character quiz\n"
+    "/nguess — Name guessing game\n"
+    "/ship @user — Love compatibility 💕\n\n"
     "<b>⚔️ Social</b>\n"
-    "/trade [char_id] [their_char_id] — Trade (reply to user)\n"
-    "/gift [char_id] — Gift a character (reply to user)\n"
-    "/duel — Challenge someone to a duel (reply to user)\n\n"
+    "/marry — Propose to someone 💍\n"
+    "/divorce — End marriage\n"
+    "/couple — Couple of the day\n"
+    "/trade [char_id] — Trade (reply to user)\n"
+    "/gift [char_id] — Gift a character\n"
+    "/duel — Challenge to duel\n\n"
     "<b>📊 Leaderboards</b>\n"
     "/top — Top collectors\n"
     "/ctop — This group's top\n"
@@ -49,7 +71,10 @@ def _kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("💬 Support", url=f"https://t.me/{SUPPORT_CHAT}"),
             InlineKeyboardButton("📢 Updates", url=f"https://t.me/{UPDATE_CHAT}"),
         ],
-        [InlineKeyboardButton("❓ Help", callback_data="help")],
+        [
+            InlineKeyboardButton("❓ Help", callback_data="help"),
+            InlineKeyboardButton("👑 Owner", url=f"tg://user?id={_OWNER_ID}"),
+        ],
     ])
 
 
@@ -73,8 +98,8 @@ async def start(update: Update, context: CallbackContext) -> None:
         if patch:
             await _pm.update_one({"_id": u.id}, {"$set": patch})
 
-    photo = random.choice(PHOTO_URL) if PHOTO_URL else None
-    caption = WELCOME if update.effective_chat.type == "private" else "🎴 I'm alive! DM me for info."
+    photo   = random.choice(PHOTO_URL) if PHOTO_URL else None
+    caption = _welcome(u.first_name, u.id) if update.effective_chat.type == "private" else "🎴 I'm alive! DM me for info."
 
     if photo:
         await context.bot.send_photo(
@@ -92,22 +117,32 @@ async def button(update: Update, context: CallbackContext) -> None:
     q = update.callback_query
     await q.answer()
 
+    u       = q.from_user
     back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
 
     try:
         if q.data == "help":
             await q.edit_message_caption(caption=HELP, reply_markup=back_kb, parse_mode=ParseMode.HTML)
         elif q.data == "back":
-            await q.edit_message_caption(caption=WELCOME, reply_markup=_kb(), parse_mode=ParseMode.HTML)
+            await q.edit_message_caption(
+                caption=_welcome(u.first_name, u.id),
+                reply_markup=_kb(),
+                parse_mode=ParseMode.HTML,
+            )
     except Exception:
         try:
             if q.data == "help":
                 await q.edit_message_text(HELP, reply_markup=back_kb, parse_mode=ParseMode.HTML)
             elif q.data == "back":
-                await q.edit_message_text(WELCOME, reply_markup=_kb(), parse_mode=ParseMode.HTML)
+                await q.edit_message_text(
+                    _welcome(u.first_name, u.id),
+                    reply_markup=_kb(),
+                    parse_mode=ParseMode.HTML,
+                )
         except Exception:
             pass
 
 
 application.add_handler(CommandHandler("start", start, block=False))
 application.add_handler(CallbackQueryHandler(button, pattern=r"^(help|back)$", block=False))
+            
