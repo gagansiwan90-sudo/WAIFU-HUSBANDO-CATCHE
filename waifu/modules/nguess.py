@@ -213,4 +213,4 @@ application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
     nguess_message, block=False,
 ), group=1)
-                          
+    
