@@ -99,8 +99,13 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
 
     user       = update.effective_user
     user_guess = update.message.text.strip().lower()
-    idx        = game["current_index"]
-    char       = game["chars"][idx]
+
+    # Ignore very short messages (less than 3 chars) — likely normal chat
+    if len(user_guess) < 3:
+        return
+
+    idx  = game["current_index"]
+    char = game["chars"][idx]
 
     name_parts = char["name"].lower().split()
     correct = (
@@ -109,8 +114,7 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     )
 
     if not correct:
-        await update.message.reply_text("❌ Wrong! Look at the character again 👀")
-        return
+        return  # Silent — no reply on wrong guess
 
     # ── Correct — character message 2 min baad delete ─────────────────
     uid = user.id
