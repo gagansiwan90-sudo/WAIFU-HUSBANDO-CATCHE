@@ -1,6 +1,7 @@
 """
-modules/quiz.py — Quiz 1 min baad delete, rarity question removed
+modules/quiz.py — Quiz fix: callback parsing, answered state cleanup
 Question types: who_is, which_anime only
+1 minute baad delete
 """
 import asyncio
 import random
@@ -23,7 +24,6 @@ DIFFICULTY = {
     "hard":   {"timeout": 20, "coins": 250, "xp": 40, "options": 4, "emoji": "🔴"},
 }
 
-# Only 2 question types — rarity removed
 Q_TYPES = ["who_is", "which_anime"]
 
 def _timer_bar(remaining: int, total: int) -> str:
@@ -58,9 +58,7 @@ async def _build_question(all_chars: list, difficulty: str) -> dict:
 
     if q_type == "which_anime":
         animes = list({c["anime"] for c in all_chars if c["anime"] != correct["anime"]})
-        if len(animes) < cfg["options"] - 1:
-            q_type = "who_is"  # fallback
-        else:
+        if len(animes) >= cfg["options"] - 1:
             wrong_animes = random.sample(animes, cfg["options"] - 1)
             choices = [correct["anime"]] + wrong_animes
             random.shuffle(choices)
@@ -73,7 +71,8 @@ async def _build_question(all_chars: list, difficulty: str) -> dict:
             }
 
     # who_is (default + fallback)
-    wrong   = random.sample([c for c in all_chars if c["id"] != correct["id"]], cfg["options"] - 1)
+    pool  = [c for c in all_chars if c["id"] != correct["id"]]
+    wrong = random.sample(pool, min(cfg["options"] - 1, len(pool)))
     options = [correct] + wrong
     random.shuffle(options)
     return {
@@ -118,19 +117,24 @@ async def quiz(update: Update, context: CallbackContext) -> None:
     correct  = question["correct"]
     timeout  = cfg["timeout"]
 
+    # ── Build keyboard — store index instead of raw id to avoid parse issues ──
     kb_buttons = []
-    for choice in question["choices"]:
-        cb_data = f"qz:{chat_id}:{choice['id']}:{question['answer_id']}:{difficulty}"
+    for i, choice in enumerate(question["choices"]):
+        # callback: qz|<chat_id>|<choice_index>|<correct_index>|<difficulty>
+        correct_index = question["choices"].index(
+            next(c for c in question["choices"] if c["id"] == question["answer_id"])
+        )
+        cb_data = f"qz|{chat_id}|{i}|{correct_index}|{difficulty}"
         kb_buttons.append([InlineKeyboardButton(choice["label"], callback_data=cb_data)])
-    kb = InlineKeyboardMarkup(kb_buttons)
 
+    kb        = InlineKeyboardMarkup(kb_buttons)
     timer_bar = _timer_bar(timeout, timeout)
-    caption = (
+    caption   = (
         f"{cfg['emoji']} <b>{difficulty.upper()} QUIZ</b>\n\n"
         f"{question['question']}\n\n"
         f"⏰ {timer_bar} {timeout}s\n"
         f"💰 <b>{cfg['coins']} coins + {cfg['xp']} XP</b>\n\n"
-        f"<i>🗑 Quiz 1 min mein delete ho jaayega</i>"
+        f"<i>🗑 This message will be deleted in 1 minute.</i>"
     )
 
     try:
@@ -149,20 +153,19 @@ async def quiz(update: Update, context: CallbackContext) -> None:
             "answered":   False,
             "difficulty": difficulty,
             "start_time": start_time,
+            "kb":         kb,
         }
 
-        asyncio.create_task(_quiz_timer(context.bot, chat_id, msg.message_id, kb, timeout, start_time))
+        asyncio.create_task(_quiz_timer(context.bot, chat_id, msg.message_id, kb, timeout, start_time, difficulty, question))
         asyncio.create_task(_quiz_expire(context.bot, chat_id, correct, msg.message_id, timeout))
-
-        # 1 min baad quiz message delete
         schedule_delete(context.bot, chat_id, msg.message_id, QUIZ_DELAY)
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def _quiz_timer(bot, chat_id: int, message_id: int,
-                      kb: InlineKeyboardMarkup, timeout: int, start_time: float) -> None:
+async def _quiz_timer(bot, chat_id: int, message_id: int, kb: InlineKeyboardMarkup,
+                      timeout: int, start_time: float, difficulty: str, question: dict) -> None:
     for _ in range(timeout // 5):
         await asyncio.sleep(5)
         quiz_data = _active_quiz.get(chat_id)
@@ -172,15 +175,14 @@ async def _quiz_timer(bot, chat_id: int, message_id: int,
         elapsed   = time.time() - start_time
         remaining = max(0, timeout - int(elapsed))
         timer_bar = _timer_bar(remaining, timeout)
+        cfg       = DIFFICULTY[difficulty]
 
-        cfg = DIFFICULTY[quiz_data["difficulty"]]
-        q   = quiz_data["question"]
         new_caption = (
-            f"{cfg['emoji']} <b>{quiz_data['difficulty'].upper()} QUIZ</b>\n\n"
-            f"{q['question']}\n\n"
+            f"{cfg['emoji']} <b>{difficulty.upper()} QUIZ</b>\n\n"
+            f"{question['question']}\n\n"
             f"⏰ {timer_bar} {remaining}s\n"
             f"💰 <b>{cfg['coins']} coins + {cfg['xp']} XP</b>\n\n"
-            f"<i>🗑 Quiz 1 min mein delete ho jaayega</i>"
+            f"<i>🗑 This message will be deleted in 1 minute.</i>"
         )
         try:
             await bot.edit_message_caption(
@@ -203,7 +205,7 @@ async def _quiz_expire(bot, chat_id: int, correct: dict, message_id: int, timeou
             chat_id=chat_id, message_id=message_id,
             caption=(
                 f"⏰ <b>Time's up! No one answered!</b>\n\n"
-                f"✅ Correct: <b>{escape(correct['name'])}</b>\n"
+                f"✅ Answer: <b>{escape(correct['name'])}</b>\n"
                 f"📺 {escape(correct['anime'])}\n"
                 f"💎 {correct.get('rarity', 'Unknown')}"
             ),
@@ -216,15 +218,20 @@ async def _quiz_expire(bot, chat_id: int, correct: dict, message_id: int, timeou
 
 async def quiz_answer(update: Update, context: CallbackContext) -> None:
     q = update.callback_query
-    await q.answer()
 
-    parts      = q.data.split(":")
-    chat_id    = int(parts[1])
-    chosen_id  = parts[2]
-    correct_id = parts[3]
-    difficulty = parts[4]
+    # ── Parse using | separator to avoid issues with negative chat_id ──
+    parts = q.data.split("|")
+    if len(parts) != 5:
+        await q.answer("Invalid data.", show_alert=True)
+        return
+
+    chat_id       = int(parts[1])
+    chosen_index  = int(parts[2])
+    correct_index = int(parts[3])
+    difficulty    = parts[4]
 
     if chat_id != _ALLOWED_GROUP:
+        await q.answer()
         return
 
     quiz_data = _active_quiz.get(chat_id)
@@ -232,20 +239,26 @@ async def quiz_answer(update: Update, context: CallbackContext) -> None:
         await q.answer("⏰ Quiz already ended!", show_alert=True)
         return
 
+    # Mark answered immediately to prevent double answers
+    quiz_data["answered"] = True
+    _active_quiz.pop(chat_id, None)
+
+    await q.answer()
+
     user       = q.from_user
     correct    = quiz_data["question"]["correct"]
     cfg        = DIFFICULTY[difficulty]
-    is_correct = chosen_id == correct_id
-
-    quiz_data["answered"] = True
-    _active_quiz.pop(chat_id, None)
+    is_correct = chosen_index == correct_index
 
     if is_correct:
         _streaks[user.id] = _streaks.get(user.id, 0) + 1
         streak      = _streaks[user.id]
         bonus       = _streak_bonus(streak)
         total_coins = cfg["coins"] + bonus
-        streak_txt  = f"\n🔥 Streak: <b>{streak}</b> {_streak_emoji(streak)}  +{bonus} bonus!" if bonus else f"\n🔥 Streak: <b>{streak}</b>"
+        streak_txt  = (
+            f"\n🔥 Streak: <b>{streak}</b> {_streak_emoji(streak)}  +{bonus} bonus!"
+            if bonus else f"\n🔥 Streak: <b>{streak}</b>"
+        )
 
         await user_collection.update_one(
             {"id": user.id},
@@ -258,7 +271,11 @@ async def quiz_answer(update: Update, context: CallbackContext) -> None:
         )
         await quiz_scores_collection.update_one(
             {"user_id": user.id},
-            {"$inc": {"correct": 1, "coins_earned": total_coins}, "$set": {"name": user.first_name}, "$max": {"best_streak": streak}},
+            {
+                "$inc": {"correct": 1, "coins_earned": total_coins},
+                "$set": {"name": user.first_name},
+                "$max": {"best_streak": streak},
+            },
             upsert=True,
         )
 
@@ -281,7 +298,7 @@ async def quiz_answer(update: Update, context: CallbackContext) -> None:
         caption = (
             f"❌ <b>Wrong!</b>\n\n"
             f"<a href='tg://user?id={user.id}'>{escape(user.first_name)}</a> answered incorrectly!\n\n"
-            f"✅ Correct: <b>{escape(correct['name'])}</b>\n"
+            f"✅ Answer: <b>{escape(correct['name'])}</b>\n"
             f"📺 {escape(correct['anime'])}\n"
             f"💎 {correct.get('rarity', 'Unknown')}\n\n"
             f"💔 Streak reset!"
@@ -289,7 +306,8 @@ async def quiz_answer(update: Update, context: CallbackContext) -> None:
 
     try:
         await q.edit_message_caption(
-            caption=caption, parse_mode=ParseMode.HTML,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([]),
         )
     except Exception:
@@ -323,6 +341,8 @@ async def quiz_leaderboard(update: Update, context: CallbackContext) -> None:
 application.add_handler(CommandHandler("quiz", quiz, block=False))
 application.add_handler(CommandHandler("qlb",  quiz_leaderboard, block=False))
 application.add_handler(CallbackQueryHandler(
-    quiz_answer, pattern=r"^qz:\-?\d+:.+:.+:.+$", block=False,
+    quiz_answer,
+    pattern=r"^qz\|",
+    block=False,
 ))
-  
+                      
