@@ -228,6 +228,13 @@ async def guess(update: Update, context: CallbackContext) -> None:
         upsert=True,
     )
 
+    RARITY_MAP = {
+        1: "⚪ Common", 2: "🟣 Rare", 3: "🟡 Legendary",
+        4: "🟢 Medium", 5: "💮 Special Edition", 6: "🔞 Extreme",
+    }
+    rarity_raw = char.get("rarity", 1)
+    rarity_txt = RARITY_MAP.get(rarity_raw, str(rarity_raw)) if isinstance(rarity_raw, int) else str(rarity_raw)
+
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("📖 My Harem", switch_inline_query_current_chat=f"collection.{user_id}")
     ]])
@@ -235,7 +242,7 @@ async def guess(update: Update, context: CallbackContext) -> None:
         f'🎉 <a href="tg://user?id={user_id}">{escape(u.first_name)}</a> guessed it!\n\n'
         f'🌸 <b>{escape(char["name"])}</b>\n'
         f'📺 {escape(char["anime"])}\n'
-        f'💎 {char["rarity"]}\n\n'
+        f'💎 {rarity_txt}\n\n'
         f'Added to your harem! +{_XP_PER_GUESS} XP ✨',
         parse_mode=ParseMode.HTML,
         reply_markup=kb,
@@ -274,4 +281,3 @@ application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
     message_counter, block=False,
 ))
-    
