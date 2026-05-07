@@ -1,239 +1,335 @@
 """
-modules/mine.py
+modules/mines.py — Minesweeper Game
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• /mines        → Start game (500 coins entry)
+• 4x4 grid, 3 mines hidden
+• 2 mine hits = Game Over
+• Safe tiles reveal karo, jitne zyada safe = zyada coins
+• /cashout → Kabhi bhi jeete hue coins le lo
 
-/mine — Pay 500 coins to mine for rewards!
-- Random coins reward
-- Chance to get a character
-- 5 minute cooldown
-- RESTRICTED to specific group only
+Rewards:
+  1-4  safe = 1.2x
+  5-8  safe = 1.5x
+  9-11 safe = 2x
+  12-13 safe = 3x
 """
-import asyncio
+
 import random
-import time
 from html import escape
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import CallbackContext, CommandHandler
+from telegram.ext import CallbackContext, CallbackQueryHandler, CommandHandler
 
-from waifu import application, collection, user_collection
+from waifu import application, user_collection
 
-_ALLOWED_GROUP = -1003865428134
-_GROUP_LINK    = "https://t.me/Anime_InfinityChatGroup"
-_MINE_COST     = 500
-_COOLDOWN      = 300  # 5 minutes
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  CONFIG
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRY_FEE   = 500
+GRID_SIZE   = 4
+TOTAL_CELLS = GRID_SIZE * GRID_SIZE  # 16
+MINE_COUNT  = 3
+MAX_HITS    = 2  # 2 mine hits = game over
 
-# Mine outcomes
-_OUTCOMES = [
-    {"type": "coins", "amount": 200,  "chance": 20, "msg": "💨 Dust... barely anything here."},
-    {"type": "coins", "amount": 500,  "chance": 25, "msg": "⛏️ Found some ore! Break even!"},
-    {"type": "coins", "amount": 800,  "chance": 20, "msg": "💎 Nice find! Some shiny gems!"},
-    {"type": "coins", "amount": 1200, "chance": 15, "msg": "🪙 Rich vein! Lots of gold!"},
-    {"type": "coins", "amount": 2000, "chance": 10, "msg": "💰 Jackpot! A treasure chest!"},
-    {"type": "coins", "amount": 3000, "chance": 5,  "msg": "🌟 Legendary ore! Massive haul!"},
-    {"type": "char",  "amount": 0,    "chance": 5,  "msg": "✨ A mysterious figure emerged from the mine!"},
-]
+# Multiplier based on safe tiles revealed
+def _multiplier(safe: int) -> float:
+    if safe <= 4:  return 1.2
+    if safe <= 8:  return 1.5
+    if safe <= 11: return 2.0
+    return 3.0
 
-_MINE_EMOJIS = ["⛏️", "🪨", "💎", "🏔️", "🌋", "⚒️"]
-_MINE_STAGES = [
-    "⛏️ Digging deep...",
-    "💨 Breaking through the rocks...",
-    "🔦 Something is glowing...",
-    "😲 Wait... what's this?!",
-]
+def _reward(safe: int) -> int:
+    return int(ENTRY_FEE * _multiplier(safe))
 
-
-def _fmt_time(secs: int) -> str:
-    m, s = divmod(secs, 60)
-    return f"{m}m {s}s" if m else f"{s}s"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  GAME STATE (in-memory per user)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# { user_id: { "mines": set, "revealed": set, "hits": int, "safe": int } }
+_games: dict[int, dict] = {}
 
 
-def _pick_outcome() -> dict:
-    roll = random.randint(1, 100)
-    cumulative = 0
-    for outcome in _OUTCOMES:
-        cumulative += outcome["chance"]
-        if roll <= cumulative:
-            return outcome
-    return _OUTCOMES[0]
+def _new_game() -> dict:
+    mines = set(random.sample(range(TOTAL_CELLS), MINE_COUNT))
+    return {
+        "mines":    mines,
+        "revealed": set(),
+        "hits":     0,
+        "safe":     0,
+        "over":     False,
+        "won":      False,
+    }
 
 
-async def mine(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
+def _build_keyboard(game: dict, reveal_all: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    for row in range(GRID_SIZE):
+        line = []
+        for col in range(GRID_SIZE):
+            idx = row * GRID_SIZE + col
+            if idx in game["revealed"] or reveal_all:
+                if idx in game["mines"]:
+                    label = "💣"
+                else:
+                    label = "✅"
+            else:
+                label = "⬛"
+            line.append(InlineKeyboardButton(
+                label,
+                callback_data=f"mines:{idx}"
+            ))
+        rows.append(line)
+
+    # Bottom buttons
+    if not game["over"]:
+        rows.append([
+            InlineKeyboardButton("💰 Cash Out", callback_data="mines:cashout"),
+            InlineKeyboardButton("❌ Quit",     callback_data="mines:quit"),
+        ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _game_text(user_name: str, game: dict) -> str:
+    hits      = game["hits"]
+    safe      = game["safe"]
+    reward    = _reward(safe)
+    mult      = _multiplier(safe)
+    remaining = MAX_HITS - hits
+
+    if game["over"] and not game["won"]:
+        return (
+            f"💣 <b>BOOM! Game Over!</b>\n\n"
+            f"👤 {escape(user_name)}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Entry Fee Lost: <b>{ENTRY_FEE} coins</b>\n"
+            f"✅ Safe tiles: <b>{safe}</b>\n"
+            f"💣 Mine hits: <b>{hits}</b>\n\n"
+            f"Better luck next time! 😢"
+        )
+    if game["won"]:
+        return (
+            f"🎉 <b>Amazing! You cleared the board!</b>\n\n"
+            f"👤 {escape(user_name)}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Safe tiles: <b>{safe}</b>\n"
+            f"💰 Reward: <b>{reward} coins</b> ({mult}x)\n\n"
+            f"🏆 Legend! Sab mines bach gaye!"
+        )
+
+    return (
+        f"💣 <b>Minesweeper!</b>\n\n"
+        f"👤 {escape(user_name)}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 {MINE_COUNT} mines  |  💰 Fee: {ENTRY_FEE}\n"
+        f"💣 {MAX_HITS} mine hits = Game Over!\n\n"
+        f"<b>💎 Current Reward:</b>\n"
+        f"• {safe} safe = <b>{reward} coins</b> ({mult}x)\n\n"
+        f"❤️ Lives: {'❤️' * remaining}{'🖤' * hits}\n"
+        f"✅ Safe so far: <b>{safe}</b>"
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  COMMANDS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def mines_command(update: Update, context: CallbackContext) -> None:
     user    = update.effective_user
+    message = update.effective_message
 
-    # Group check
-    if chat_id != _ALLOWED_GROUP:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✨ Join Our Group", url=_GROUP_LINK)
-        ]])
-        await update.message.reply_text(
-            "❌ <b>This command only works in our main group!</b>\n\n"
-            "🌸 Join us to start mining!",
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb,
+    # Already in game?
+    if user.id in _games and not _games[user.id]["over"]:
+        await message.reply_text(
+            "⚠️ Tera game already chal raha hai!\n"
+            "Pehle finish karo ya <code>/cashout</code> karo.",
+            parse_mode=ParseMode.HTML
         )
         return
 
-    # Get user doc
-    user_doc = await user_collection.find_one({"id": user.id})
-    now      = time.time()
+    # Check coins
+    u_doc = await user_collection.find_one({"id": user.id})
+    if not u_doc:
+        await message.reply_text("❌ Pehle bot use karo — /start karo!")
+        return
 
-    # Cooldown check
-    last_mine = (user_doc or {}).get("last_mine", 0)
-    if now - last_mine < _COOLDOWN:
-        remaining = int(_COOLDOWN - (now - last_mine))
-        await update.message.reply_text(
-            f"⏳ <b>Mine is recharging!</b>\n\n"
-            f"Come back in <b>{_fmt_time(remaining)}</b> ⛏️",
-            parse_mode=ParseMode.HTML,
+    coins = u_doc.get("coins", 0)
+    if coins < ENTRY_FEE:
+        await message.reply_text(
+            f"❌ Tere paas <b>{ENTRY_FEE} coins</b> nahi hain!\n"
+            f"Abhi tere paas: <b>{coins} coins</b>",
+            parse_mode=ParseMode.HTML
         )
         return
 
-    # Coins check
-    coins = (user_doc or {}).get("coins", 0)
-    if coins < _MINE_COST:
-        await update.message.reply_text(
-            f"❌ <b>Not enough coins!</b>\n\n"
-            f"Mining costs <b>{_MINE_COST:,} 🪙</b>\n"
-            f"Your balance: <b>{coins:,} 🪙</b>\n\n"
-            f"<i>Earn more with /daily or /guess!</i>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    # Deduct cost immediately
+    # Deduct entry fee
     await user_collection.update_one(
         {"id": user.id},
-        {
-            "$inc": {"coins": -_MINE_COST},
-            "$set": {
-                "last_mine":  now,
-                "username":   user.username,
-                "first_name": user.first_name,
-            },
-        },
-        upsert=True,
+        {"$inc": {"coins": -ENTRY_FEE}}
     )
 
-    # Animated mining stages
-    stage_msg = await update.message.reply_text(
-        f"⛏️ <b>{escape(user.first_name)} is mining...</b>\n\n"
-        f"{_MINE_STAGES[0]}",
+    # Start game
+    game = _new_game()
+    _games[user.id] = game
+
+    kb   = _build_keyboard(game)
+    text = _game_text(user.first_name, game)
+
+    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def cashout_command(update: Update, context: CallbackContext) -> None:
+    user    = update.effective_user
+    message = update.effective_message
+
+    game = _games.get(user.id)
+    if not game or game["over"]:
+        await message.reply_text("❌ Koi active game nahi hai! /mines se shuru karo.")
+        return
+
+    if game["safe"] == 0:
+        await message.reply_text("⚠️ Pehle koi tile reveal karo, phir cashout karo!")
+        return
+
+    reward = _reward(game["safe"])
+    game["over"] = True
+    game["won"]  = True
+
+    await user_collection.update_one(
+        {"id": user.id},
+        {"$inc": {"coins": reward}}
+    )
+
+    kb = _build_keyboard(game, reveal_all=True)
+    await message.reply_text(
+        f"💰 <b>Cashed Out!</b>\n\n"
+        f"✅ Safe tiles: <b>{game['safe']}</b>\n"
+        f"🎁 Reward: <b>{reward} coins</b> ({_multiplier(game['safe'])}x)\n\n"
+        f"Smart move! 😎",
         parse_mode=ParseMode.HTML,
+        reply_markup=kb
     )
 
-    for stage in _MINE_STAGES[1:]:
-        await asyncio.sleep(1)
-        try:
-            await stage_msg.edit_text(
-                f"⛏️ <b>{escape(user.first_name)} is mining...</b>\n\n"
-                f"{stage}",
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            pass
 
-    await asyncio.sleep(1)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  CALLBACK — tile click
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    # Pick outcome
-    outcome = _pick_outcome()
+async def mines_callback(update: Update, context: CallbackContext) -> None:
+    q    = update.callback_query
+    user = q.from_user
+    await q.answer()
 
-    if outcome["type"] == "coins":
-        reward  = outcome["amount"]
-        profit  = reward - _MINE_COST
-        profit_txt = f"+{profit:,}" if profit >= 0 else f"{profit:,}"
+    data = q.data  # "mines:0" .. "mines:15" | "mines:cashout" | "mines:quit"
+    action = data.split(":")[1]
 
-        await user_collection.update_one(
-            {"id": user.id},
-            {"$inc": {"coins": reward}},
-        )
+    game = _games.get(user.id)
+    if not game:
+        await q.answer("❌ Game nahi mila! /mines se start karo.", show_alert=True)
+        return
 
-        new_balance = coins - _MINE_COST + reward
+    if game["over"]:
+        await q.answer("Game already khatam ho gaya!", show_alert=True)
+        return
 
-        result_text = (
-            f"⛏️ <b>Mine Result!</b>\n\n"
-            f"{outcome['msg']}\n\n"
-            f"💸 Paid: <b>{_MINE_COST:,} 🪙</b>\n"
-            f"💰 Found: <b>{reward:,} 🪙</b>\n"
-            f"📊 Profit: <b>{profit_txt} 🪙</b>\n\n"
-            f"👛 Balance: <b>{new_balance:,} 🪙</b>\n\n"
-            f"⏰ Mine recharges in <b>5 minutes</b>!"
-        )
-
-        try:
-            await stage_msg.edit_text(result_text, parse_mode=ParseMode.HTML)
-        except Exception:
-            await update.message.reply_text(result_text, parse_mode=ParseMode.HTML)
-
-    elif outcome["type"] == "char":
-        # Get random character from DB
-        all_chars = await collection.find({}).to_list(length=5000)
-
-        if not all_chars:
-            # No characters — give coins instead
-            fallback = 1500
-            await user_collection.update_one(
-                {"id": user.id},
-                {"$inc": {"coins": fallback}},
-            )
-            result_text = (
-                f"⛏️ <b>Mine Result!</b>\n\n"
-                f"✨ Something special but...\n"
-                f"💰 Got <b>{fallback:,} 🪙</b> instead!\n\n"
-                f"⏰ Mine recharges in <b>5 minutes</b>!"
-            )
-            try:
-                await stage_msg.edit_text(result_text, parse_mode=ParseMode.HTML)
-            except Exception:
-                await update.message.reply_text(result_text, parse_mode=ParseMode.HTML)
+    # ── Cash out ──────────────────────────────────────────────────────
+    if action == "cashout":
+        if game["safe"] == 0:
+            await q.answer("⚠️ Pehle koi tile reveal karo!", show_alert=True)
             return
-
-        char = random.choice(all_chars)
-
-        # Add character to user
+        reward       = _reward(game["safe"])
+        game["over"] = True
+        game["won"]  = True
         await user_collection.update_one(
-            {"id": user.id},
-            {"$push": {"characters": char}},
+            {"id": user.id}, {"$inc": {"coins": reward}}
         )
-
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "📖 My Harem",
-                switch_inline_query_current_chat=f"collection.{user.id}",
-            )
-        ]])
-
-        caption = (
-            f"⛏️ <b>Mine Result!</b>\n\n"
-            f"{outcome['msg']}\n\n"
-            f"🌸 <b>{escape(char['name'])}</b>\n"
-            f"📺 {escape(char['anime'])}\n"
-            f"💎 {char.get('rarity', 'Unknown')}\n\n"
-            f"✨ Added to your harem!\n"
-            f"💸 Paid: <b>{_MINE_COST:,} 🪙</b>\n\n"
-            f"⏰ Mine recharges in <b>5 minutes</b>!"
+        kb   = _build_keyboard(game, reveal_all=True)
+        text = (
+            f"💰 <b>Cashed Out!</b>\n\n"
+            f"✅ Safe tiles: <b>{game['safe']}</b>\n"
+            f"🎁 Reward: <b>{reward} coins</b> ({_multiplier(game['safe'])}x)\n\n"
+            f"Smart move! 😎"
         )
-
         try:
-            await stage_msg.delete()
+            await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception:
             pass
+        return
 
-        photo = char.get("img_url")
-        if photo:
+    # ── Quit ──────────────────────────────────────────────────────────
+    if action == "quit":
+        game["over"] = True
+        kb   = _build_keyboard(game, reveal_all=True)
+        try:
+            await q.edit_message_text(
+                f"🏳️ Game quit kar diya!\n💸 {ENTRY_FEE} coins gaye...",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb
+            )
+        except Exception:
+            pass
+        return
+
+    # ── Tile click ────────────────────────────────────────────────────
+    try:
+        idx = int(action)
+    except ValueError:
+        return
+
+    if idx in game["revealed"]:
+        await q.answer("Yeh tile already reveal ho chuki hai!", show_alert=True)
+        return
+
+    game["revealed"].add(idx)
+
+    if idx in game["mines"]:
+        # Mine hit!
+        game["hits"] += 1
+        await q.answer("💣 BOOM! Mine mili!", show_alert=True)
+
+        if game["hits"] >= MAX_HITS:
+            # Game over
+            game["over"] = True
+            kb   = _build_keyboard(game, reveal_all=True)
+            text = _game_text(user.first_name, game)
             try:
-                await update.message.reply_photo(
-                    photo=photo,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                )
-                return
+                await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
             except Exception:
                 pass
+            return
+    else:
+        game["safe"] += 1
+        await q.answer(f"✅ Safe! +1 tile")
 
-        await update.message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=kb)
+        # All safe tiles revealed?
+        total_safe = TOTAL_CELLS - MINE_COUNT
+        if game["safe"] >= total_safe:
+            game["over"] = True
+            game["won"]  = True
+            reward = _reward(game["safe"])
+            await user_collection.update_one(
+                {"id": user.id}, {"$inc": {"coins": reward}}
+            )
+            kb   = _build_keyboard(game, reveal_all=True)
+            text = _game_text(user.first_name, game)
+            try:
+                await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                pass
+            return
+
+    # Update board
+    kb   = _build_keyboard(game)
+    text = _game_text(user.first_name, game)
+    try:
+        await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception:
+        pass
 
 
-application.add_handler(CommandHandler("mine", mine, block=False))
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  REGISTER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+application.add_handler(CommandHandler("mines", mines_command, block=False))
+application.add_handler(CommandHandler("cashout", cashout_command, block=False))
+application.add_handler(CallbackQueryHandler(mines_callback, pattern=r"^mines:", block=False))
+    
