@@ -274,4 +274,4 @@ application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
     message_counter, block=False,
 ))
-      
+    
