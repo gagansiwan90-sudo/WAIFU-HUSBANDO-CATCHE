@@ -1,14 +1,5 @@
 """
-modules/waifu_drop.py
-
-Core game loop:
-  - Message counter → threshold drop
-  - APScheduler timed drop every N minutes
-  - /guess to claim
-  - /fav to favourite
-  - Anti-spam (10 consecutive messages from same user → 10-min ignore)
-  - Auto-delete drop message on claim OR after 10 minutes
-  - Wrong guess reply auto-delete after 3 seconds
+modules/waifu_drop.py — Drop message delete on claim/expire
 """
 import asyncio
 import random
@@ -27,25 +18,22 @@ from waifu import (
     LOGGER,
 )
 from waifu.config import Config
+from waifu.modules.auto_delete import schedule_delete, WAIFU_DROP_DELAY
 
-# ── Per-chat in-memory state ──────────────────────────────────────────────────
-_active_char:      dict[int, dict]  = {}
-_active_msg:       dict[int, int]   = {}   # chat_id → drop message_id
-_claimed:          dict[int, int]   = {}
-_msg_counts:       dict[int, int]   = {}
-_last_user:        dict[int, dict]  = {}
-_warned:           dict[int, float] = {}
-_sent_ids:         dict[int, list]  = {}
-_registered_chats: set[int]         = set()
+_active_char:      dict[int, dict] = {}
+_active_msg:       dict[int, int]  = {}   # chat_id → drop message_id
+_claimed:          dict[int, int]  = {}
+_msg_counts:       dict[int, int]  = {}
+_last_user:        dict[int, dict] = {}
+_warned:           dict[int, float]= {}
+_sent_ids:         dict[int, list] = {}
+_registered_chats: set[int]        = set()
 
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 _XP_PER_GUESS    = 50
 _DROP_EXPIRE_SEC = 600  # 10 minutes
-_WRONG_DELETE_SEC = 3   # delete wrong reply after 3 seconds
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _chat_frequency(chat_id: int) -> int:
     doc = await user_totals_collection.find_one({"chat_id": chat_id})
@@ -57,22 +45,8 @@ def _rolling_window_size(total_chars: int) -> int:
     return max(20, total_chars // 2)
 
 
-async def _safe_delete(bot, chat_id: int, message_id: int) -> None:
-    """Safely delete a message."""
-    try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception:
-        pass
-
-
-async def _delete_after(bot, chat_id: int, message_id: int, delay: int) -> None:
-    """Delete a message after delay seconds."""
-    await asyncio.sleep(delay)
-    await _safe_delete(bot, chat_id, message_id)
-
-
 async def _expire_drop(bot, chat_id: int, char_id: str) -> None:
-    """Called after 10 minutes — delete drop if still unclaimed."""
+    """10 min baad drop expire — message delete karo."""
     await asyncio.sleep(_DROP_EXPIRE_SEC)
 
     current = _active_char.get(chat_id)
@@ -82,10 +56,12 @@ async def _expire_drop(bot, chat_id: int, char_id: str) -> None:
     _active_char.pop(chat_id, None)
     _claimed.pop(chat_id, None)
 
+    # Drop message immediately delete on expire
     msg_id = _active_msg.pop(chat_id, None)
     if msg_id:
-        await _safe_delete(bot, chat_id, msg_id)
-        LOGGER.info("Drop expired and deleted in chat %s: %s", chat_id, char_id)
+        schedule_delete(bot, chat_id, msg_id, WAIFU_DROP_DELAY)
+
+    LOGGER.info("Drop expired in chat %s: %s", chat_id, char_id)
 
     try:
         expire_msg = await bot.send_message(
@@ -93,8 +69,8 @@ async def _expire_drop(bot, chat_id: int, char_id: str) -> None:
             text="⏰ <b>The character got away!</b>\n<i>No one claimed them in time...</i>",
             parse_mode=ParseMode.HTML,
         )
-        # Auto delete expire notice after 5 seconds
-        asyncio.create_task(_delete_after(bot, chat_id, expire_msg.message_id, 5))
+        # Expire notice bhi 10 sec baad delete
+        schedule_delete(bot, chat_id, expire_msg.message_id, 10)
     except Exception:
         pass
 
@@ -102,7 +78,6 @@ async def _expire_drop(bot, chat_id: int, char_id: str) -> None:
 async def _send_drop(chat_id: int, bot) -> None:
     all_chars = await collection.find({}).to_list(length=5000)
     if not all_chars:
-        LOGGER.debug("No characters in DB — skipping drop for chat %s", chat_id)
         return
 
     window = _rolling_window_size(len(all_chars))
@@ -112,10 +87,8 @@ async def _send_drop(chat_id: int, bot) -> None:
     if not unsent:
         _sent_ids[chat_id] = []
         unsent = all_chars
-        LOGGER.debug("Sent-IDs window cleared for chat %s", chat_id)
 
-    char = random.choice(unsent)
-
+    char     = random.choice(unsent)
     new_sent = sent + [char["id"]]
     _sent_ids[chat_id] = new_sent[-window:]
 
@@ -134,18 +107,13 @@ async def _send_drop(chat_id: int, bot) -> None:
             parse_mode=ParseMode.HTML,
         )
         _active_msg[chat_id] = msg.message_id
-
-        LOGGER.info("Drop sent to chat %s: %s (%s)",
-                    chat_id, char["name"], char.get("rarity", "?"))
-
+        LOGGER.info("Drop sent to chat %s: %s (%s)", chat_id, char["name"], char.get("rarity", "?"))
         asyncio.create_task(_expire_drop(bot, chat_id, char["id"]))
 
     except Exception as e:
         _active_char.pop(chat_id, None)
         LOGGER.warning("Drop failed in chat %s: %s", chat_id, e)
 
-
-# ── Scheduler ─────────────────────────────────────────────────────────────────
 
 async def _timed_drop_job(bot) -> None:
     for chat_id in list(_registered_chats):
@@ -162,11 +130,8 @@ def start_scheduler(bot) -> None:
     )
     if not scheduler.running:
         scheduler.start()
-    LOGGER.info("Drop scheduler started — interval: every %d min",
-                Config.DROP_INTERVAL_MIN)
+    LOGGER.info("Drop scheduler started — every %d min", Config.DROP_INTERVAL_MIN)
 
-
-# ── Message counter ───────────────────────────────────────────────────────────
 
 async def message_counter(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.type == "private":
@@ -199,8 +164,6 @@ async def message_counter(update: Update, context: CallbackContext) -> None:
         await _send_drop(chat_id, context.bot)
 
 
-# ── /guess ────────────────────────────────────────────────────────────────────
-
 async def guess(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -210,24 +173,18 @@ async def guess(update: Update, context: CallbackContext) -> None:
         return
 
     if chat_id in _claimed:
-        msg = await update.message.reply_text(
+        await update.message.reply_text(
             "❌ Already claimed by someone else! Wait for the next character."
         )
-        asyncio.create_task(_delete_after(context.bot, chat_id, msg.message_id, _WRONG_DELETE_SEC))
-        asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, _WRONG_DELETE_SEC))
         return
 
     user_guess = " ".join(context.args).strip().lower() if context.args else ""
     if not user_guess:
-        msg = await update.message.reply_text("Usage: /guess <character name>")
-        asyncio.create_task(_delete_after(context.bot, chat_id, msg.message_id, _WRONG_DELETE_SEC))
-        asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, _WRONG_DELETE_SEC))
+        await update.message.reply_text("Usage: /guess <character name>")
         return
 
     if any(bad in user_guess for bad in ("()", "&&", "||", "<script")):
-        msg = await update.message.reply_text("❌ Invalid characters in guess.")
-        asyncio.create_task(_delete_after(context.bot, chat_id, msg.message_id, _WRONG_DELETE_SEC))
-        asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, _WRONG_DELETE_SEC))
+        await update.message.reply_text("❌ Invalid characters in guess.")
         return
 
     name_parts = char["name"].lower().split()
@@ -237,21 +194,17 @@ async def guess(update: Update, context: CallbackContext) -> None:
     )
 
     if not correct:
-        msg = await update.message.reply_text("❌ Wrong! Look at the character again 👀")
-        asyncio.create_task(_delete_after(context.bot, chat_id, msg.message_id, _WRONG_DELETE_SEC))
-        asyncio.create_task(_delete_after(context.bot, chat_id, update.message.message_id, _WRONG_DELETE_SEC))
+        await update.message.reply_text("❌ Wrong! Look at the character again 👀")
         return
 
-    # ── Correct guess ─────────────────────────────────────────────────────────
+    # ── Correct — drop message immediately delete ─────────────────────────
     _claimed[chat_id] = user_id
     _active_char.pop(chat_id, None)
 
-    # Delete the drop message immediately
     msg_id = _active_msg.pop(chat_id, None)
     if msg_id:
-        await _safe_delete(context.bot, chat_id, msg_id)
+        schedule_delete(context.bot, chat_id, msg_id, WAIFU_DROP_DELAY)
 
-    # ── Persist to DB ─────────────────────────────────────────────────────────
     u = update.effective_user
     await user_collection.update_one(
         {"id": user_id},
@@ -259,38 +212,27 @@ async def guess(update: Update, context: CallbackContext) -> None:
             "$push": {"characters": char},
             "$inc":  {"total_guesses": 1, "xp": _XP_PER_GUESS},
             "$set":  {"username": u.username, "first_name": u.first_name},
-            "$setOnInsert": {
-                "coins":     0,
-                "wins":      0,
-                "favorites": [],
-            },
+            "$setOnInsert": {"coins": 0, "wins": 0, "favorites": []},
         },
         upsert=True,
     )
 
     await group_user_totals_collection.update_one(
         {"user_id": user_id, "group_id": chat_id},
-        {"$set":  {"username": u.username, "first_name": u.first_name},
-         "$inc":  {"count": 1}},
+        {"$set": {"username": u.username, "first_name": u.first_name}, "$inc": {"count": 1}},
         upsert=True,
     )
     await top_global_groups_collection.update_one(
         {"group_id": chat_id},
-        {"$set": {"group_name": update.effective_chat.title},
-         "$inc": {"count": 1}},
+        {"$set": {"group_name": update.effective_chat.title}, "$inc": {"count": 1}},
         upsert=True,
     )
 
-    # ── Success reply ─────────────────────────────────────────────────────────
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "📖 My Harem",
-            switch_inline_query_current_chat=f"collection.{user_id}",
-        )
+        InlineKeyboardButton("📖 My Harem", switch_inline_query_current_chat=f"collection.{user_id}")
     ]])
     await update.message.reply_text(
-        f'🎉 <a href="tg://user?id={user_id}">{escape(u.first_name)}</a> '
-        f'guessed it!\n\n'
+        f'🎉 <a href="tg://user?id={user_id}">{escape(u.first_name)}</a> guessed it!\n\n'
         f'🌸 <b>{escape(char["name"])}</b>\n'
         f'📺 {escape(char["anime"])}\n'
         f'💎 {char["rarity"]}\n\n'
@@ -299,8 +241,6 @@ async def guess(update: Update, context: CallbackContext) -> None:
         reply_markup=kb,
     )
 
-
-# ── /fav ──────────────────────────────────────────────────────────────────────
 
 async def fav(update: Update, context: CallbackContext) -> None:
     user_id = update.effective_user.id
@@ -326,15 +266,12 @@ async def fav(update: Update, context: CallbackContext) -> None:
     )
 
 
-# ── Register handlers ─────────────────────────────────────────────────────────
-
 application.add_handler(CommandHandler(
     ["guess", "protecc", "collect", "grab", "hunt"], guess, block=False
 ))
 application.add_handler(CommandHandler("fav", fav, block=False))
 application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
-    message_counter,
-    block=False,
+    message_counter, block=False,
 ))
       
