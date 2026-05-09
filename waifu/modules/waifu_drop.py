@@ -168,14 +168,15 @@ async def guess(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
 
-    char = _active_char.get(chat_id)
-    if not char:
-        return
-
+    # If already claimed, tell the user
     if chat_id in _claimed:
         await update.message.reply_text(
-            "❌ Already claimed by someone else! Wait for the next character."
+            "❌ Already claimed by someone else! Wait for the next drop."
         )
+        return
+
+    char = _active_char.get(chat_id)
+    if not char:
         return
 
     user_guess = " ".join(context.args).strip().lower() if context.args else ""
@@ -238,12 +239,15 @@ async def guess(update: Update, context: CallbackContext) -> None:
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("📖 My Harem", switch_inline_query_current_chat=f"collection.{user_id}")
     ]])
-    await update.message.reply_text(
-        f'🎉 <a href="tg://user?id={user_id}">{escape(u.first_name)}</a> guessed it!\n\n'
-        f'🌸 <b>{escape(char["name"])}</b>\n'
-        f'📺 {escape(char["anime"])}\n'
-        f'💎 {rarity_txt}\n\n'
-        f'Added to your harem! +{_XP_PER_GUESS} XP ✨',
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f'🎉 <a href="tg://user?id={user_id}">{escape(u.first_name)}</a> guessed it!\n\n'
+            f'🌸 <b>{escape(char["name"])}</b>\n'
+            f'📺 {escape(char["anime"])}\n'
+            f'💎 {rarity_txt}\n\n'
+            f'Added to your harem! +{_XP_PER_GUESS} XP ✨'
+        ),
         parse_mode=ParseMode.HTML,
         reply_markup=kb,
     )
