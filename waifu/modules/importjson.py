@@ -10,7 +10,13 @@ from waifu import (
     sudo_users,
 )
 
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+# Channel ID from env
+CHANNEL_ID = os.getenv("CHARA_CHANNEL_ID")
+
+if not CHANNEL_ID:
+    raise Exception("CHARA_CHANNEL_ID env missing")
+
+CHANNEL_ID = int(CHANNEL_ID)
 
 
 async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20,9 +26,10 @@ async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in sudo_users:
         return await update.message.reply_text("❌ Not authorized.")
 
+    # must reply to json file
     if not update.message.reply_to_message:
         return await update.message.reply_text(
-            "Reply to JSON file."
+            "❌ Reply to a JSON file."
         )
 
     document = update.message.reply_to_message.document
@@ -41,12 +48,14 @@ async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📥 Downloading JSON file..."
     )
 
+    # download json
     file = await context.bot.get_file(document.file_id)
 
     path = "characters_import.json"
 
     await file.download_to_drive(path)
 
+    # load json
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -69,7 +78,7 @@ async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 failed += 1
                 continue
 
-            # upload image to channel
+            # upload to channel
             msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=image,
@@ -101,4 +110,4 @@ async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 application.add_handler(
     CommandHandler("importjson", import_json)
-)
+            )
