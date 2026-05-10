@@ -1,4 +1,3 @@
-import json
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
@@ -11,29 +10,31 @@ async def export_chars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id not in sudo_users:
-        return await update.message.reply_text("Not authorized.")
+        return await update.message.reply_text("❌ Not authorized.")
 
-    data = []
+    text = ""
 
     async for char in collection.find():
 
-        data.append({
-            "id": str(char.get("_id")),
-            "name": char.get("name"),
-            "anime": char.get("anime"),
-            "rarity": char.get("rarity"),
-            "image": char.get("img_url")
-        })
+        char_id = str(char.get("_id"))
+        name = char.get("name")
+        anime = char.get("anime")
+        rarity = char.get("rarity")
+        image = char.get("img_url")
 
-    file_name = "characters_export.json"
+        text += (
+            f"/upload {image} {name} {anime} {rarity}\n"
+        )
 
-    with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    if not text:
+        return await update.message.reply_text("No characters found.")
 
-    await update.message.reply_document(
-        document=file_name,
-        caption="✅ Characters exported successfully."
-    )
+    # telegram message limit safe split
+    for i in range(0, len(text), 4000):
+        await update.message.reply_text(
+            f"<code>{text[i:i+4000]}</code>",
+            parse_mode="HTML"
+        )
 
 
 application.add_handler(CommandHandler("exportchars", export_chars))
