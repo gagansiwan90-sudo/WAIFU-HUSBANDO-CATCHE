@@ -1,9 +1,16 @@
+import os
 import json
+
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
-from waifu import application
-from waifu import collection, sudo_users
+from waifu import (
+    application,
+    collection,
+    sudo_users,
+)
+
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 
 
 async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20,10 +27,19 @@ async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     document = update.message.reply_to_message.document
 
+    if not document:
+        return await update.message.reply_text(
+            "❌ Reply to a JSON file."
+        )
+
     if not document.file_name.endswith(".json"):
         return await update.message.reply_text(
-            "❌ Send valid JSON file."
+            "❌ Invalid file type."
         )
+
+    await update.message.reply_text(
+        "📥 Downloading JSON file..."
+    )
 
     file = await context.bot.get_file(document.file_id)
 
@@ -35,21 +51,54 @@ async def import_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = json.load(f)
 
     added = 0
+    failed = 0
+
+    await update.message.reply_text(
+        f"🚀 Importing {len(data)} characters..."
+    )
 
     for char in data:
 
-        await collection.insert_one({
-            "img_url": char.get("image"),
-            "name": char.get("name"),
-            "anime": char.get("anime"),
-            "rarity": char.get("rarity")
-        })
+        try:
+            image = char.get("image")
+            name = char.get("name")
+            anime = char.get("anime")
+            rarity = char.get("rarity")
 
-        added += 1
+            if not image or not name:
+                failed += 1
+                continue
+
+            # upload image to channel
+            msg = await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=image,
+                caption=name
+            )
+
+            # save in mongodb
+            await collection.insert_one({
+                "img_url": image,
+                "name": name,
+                "anime": anime,
+                "rarity": rarity,
+                "message_id": msg.message_id,
+                "file_id": msg.photo[-1].file_id
+            })
+
+            added += 1
+
+        except Exception as e:
+            print(f"Import Error: {e}")
+            failed += 1
 
     await update.message.reply_text(
-        f"✅ Imported {added} characters."
+        f"✅ Import Completed.\n\n"
+        f"✔ Imported: {added}\n"
+        f"❌ Failed: {failed}"
     )
 
 
-application.add_handler(CommandHandler("importjson", import_json))
+application.add_handler(
+    CommandHandler("importjson", import_json)
+)
