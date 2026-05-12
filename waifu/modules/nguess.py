@@ -1,5 +1,5 @@
 """
-modules/nguess.py — 2 min baad messages delete
+modules/nguess.py — All character images tracked and deleted after 2 min
 """
 import asyncio
 import random
@@ -36,6 +36,10 @@ async def _send_character(chat_id: int, bot, game: dict) -> None:
             parse_mode=ParseMode.HTML,
         )
         game["message_id"] = msg.message_id
+        # Track ALL image message ids
+        game["all_msg_ids"].append(msg.message_id)
+        # Each image scheduled for delete after 2 min
+        schedule_delete(bot, chat_id, msg.message_id, NGUESS_DELAY)
     except Exception as e:
         await bot.send_message(chat_id=chat_id, text=f"❌ Error: {e}")
 
@@ -68,6 +72,7 @@ async def nguess(update: Update, context: CallbackContext) -> None:
         "current_index": 0,
         "total_rounds":  total_rounds,
         "message_id":    None,
+        "all_msg_ids":   [],    # Track every image sent
         "scores":        {},
     }
     _active_games[chat_id] = game
@@ -82,7 +87,6 @@ async def nguess(update: Update, context: CallbackContext) -> None:
         f"<i>Get ready...</i> 🎯",
         parse_mode=ParseMode.HTML,
     )
-    # Start msg 2 min baad delete
     schedule_delete(context.bot, chat_id, start_msg.message_id, NGUESS_DELAY)
 
     await _send_character(chat_id, context.bot, game)
@@ -100,7 +104,6 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     user       = update.effective_user
     user_guess = update.message.text.strip().lower()
 
-    # Ignore very short messages (less than 3 chars) — likely normal chat
     if len(user_guess) < 3:
         return
 
@@ -114,9 +117,9 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
     )
 
     if not correct:
-        return  # Silent — no reply on wrong guess
+        return
 
-    # ── Correct — character message 2 min baad delete ─────────────────
+    # ── Correct ───────────────────────────────────────────────────────
     uid = user.id
     if uid not in game["scores"]:
         game["scores"][uid] = {"name": user.first_name, "coins": 0, "correct": 0}
@@ -133,10 +136,6 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         upsert=True,
     )
 
-    # Character image 2 min baad delete
-    if game.get("message_id"):
-        schedule_delete(context.bot, chat_id, game["message_id"], NGUESS_DELAY)
-
     correct_msg = await update.message.reply_text(
         f"✅ <b>Correct!</b> "
         f"<a href='tg://user?id={uid}'>{escape(user.first_name)}</a> got it!\n\n"
@@ -146,7 +145,6 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
         f"💰 +{_COINS_REWARD} coins  ✨ +{_XP_REWARD} XP",
         parse_mode=ParseMode.HTML,
     )
-    # Correct reply bhi 2 min baad delete
     schedule_delete(context.bot, chat_id, correct_msg.message_id, NGUESS_DELAY)
 
     game["current_index"] += 1
@@ -178,7 +176,6 @@ async def nguess_message(update: Update, context: CallbackContext) -> None:
             ),
             parse_mode=ParseMode.HTML,
         )
-        # Game over message bhi 2 min baad delete
         schedule_delete(context.bot, chat_id, end_msg.message_id, NGUESS_DELAY)
         return
 
@@ -199,9 +196,9 @@ async def nguess_stop(update: Update, context: CallbackContext) -> None:
     idx   = game["current_index"]
     total = game["total_rounds"]
 
-    # Character image delete on stop
-    if game.get("message_id"):
-        schedule_delete(context.bot, chat_id, game["message_id"], NGUESS_DELAY)
+    # Delete all remaining images immediately
+    for msg_id in game.get("all_msg_ids", []):
+        schedule_delete(context.bot, chat_id, msg_id, 0)
 
     stop_msg = await update.message.reply_text(
         f"🛑 <b>Game stopped!</b>\nCompleted <b>{idx}/{total}</b> rounds.\n\n"
@@ -217,4 +214,4 @@ application.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
     nguess_message, block=False,
 ), group=1)
-    
+        
